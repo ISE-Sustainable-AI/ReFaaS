@@ -1,0 +1,4 @@
+{
+  "input": "{\"num1\":-10,\"num2\":10}",
+  "output": "{\"response\":{\"statusCode\":200,\"headers\":null,\"multiValueHeaders\":null,\"body\":\"{\"result\":0}\"}}"
+}

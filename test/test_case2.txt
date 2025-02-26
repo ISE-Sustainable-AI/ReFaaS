@@ -1,0 +1,66 @@
+<think>
+Alright, I need to translate the given Python Lambda handler into Go. Let me start by understanding what the Python code does.
+
+The Python function is a Lambda handler that returns a 200 status code with a JSON body containing "message": "hello world". It's a simple example without any request processing or error handling beyond the basic structure.
+
+Now, I need to create a Go function that matches this behavior. The handler in Go must adhere to the specified interface: `func handle(ctx context.Context, event json.RawMessage) (events.APIGatewayProxyResponse, error)`.
+
+First, I'll set up the imports. The user mentioned two specific AWS imports that are necessary, so I'll include those. Additionally, I need standard libraries like context, encoding/json, and net/http for handling JSON responses and HTTP status codes.
+
+Next, the handler function in Go will take a context and a RawMessage event. Since the Python code doesn't process any incoming data, my Go function won't need to unmarshal the event into a struct. It can directly construct the response.
+
+The response structure in Go is `events.APIGatewayProxyResponse`, which includes StatusCode, Body, Headers, etc. The Python code returns a simple JSON object, so I'll create a map with the message and then marshal it into a JSON string for the Body field.
+
+I'll also set appropriate headers, like Content-Type to application/json, to match what the Python code would implicitly provide.
+
+Since the Python example had some commented-out error handling, but it's not functional, I won't include error handling in the Go function unless necessary. The current implementation assumes everything works as expected.
+
+Finally, I'll structure the return statement to match the required format, ensuring that the Body is a properly JSON-encoded string and the StatusCode is 200.
+
+I should also make sure that all imports are correctly specified and that the module path in go.mod is appropriate for the project. The user provided an example go.mod, so I'll use that structure, adjusting the module name as needed.
+
+Putting it all together, the Go function will be concise, handling the event by constructing a response with a "hello world" message and returning it with a 200 status code.
+</think>
+
+```
+#### main.go
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+
+	"github.com/aws/aws-lambda-go/events"
+	"github.com/aws/aws-lambda-go/lambda"
+)
+
+func handle(ctx context.Context, event json.RawMessage) (events.APIGatewayProxyResponse, error) {
+	response := map[string]string{
+		"message": "hello world",
+	}
+
+	jsonResponse, err := json.Marshal(response)
+	if err != nil {
+		return events.APIGatewayProxyResponse{
+			StatusCode: http.StatusInternalServerError,
+			Body:       "Internal server error",
+		}, nil
+	}
+
+	return events.APIGatewayProxyResponse{
+		StatusCode: http.StatusOK,
+		Headers: map[string]string{
+			"Content-Type": "application/json",
+		},
+		Body: string(jsonResponse),
+	}, nil
+}
+
+#### go.mod
+module github.com/lambda/function
+
+go 1.23.5
+
+require github.com/aws/aws-lambda-go v1.24
+```
