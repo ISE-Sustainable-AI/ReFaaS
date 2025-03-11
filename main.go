@@ -19,7 +19,7 @@ func main() {
 func MinimizeString(s string) string {
 	var builder strings.Builder
 	for _, r := range s {
-		if !unicode.IsSpace(r) && !unicode.IsControl(r) {
+		if !unicode.IsControl(r) {
 			builder.WriteRune(r)
 		}
 	}

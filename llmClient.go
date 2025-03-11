@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"github.com/ollama/ollama/api"
 	log "github.com/sirupsen/logrus"
@@ -31,26 +32,42 @@ func (cc *CodeConverter) queryLLM(ctx context.Context, code *DeploymentPackage) 
 	return response.Response, metrics, nil
 }
 
+var llmOutputSchema = json.RawMessage(`{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": {
+    "type": "string"
+  }
+}`)
+
 func (cc *CodeConverter) invokeLLM(ctx context.Context, buf bytes.Buffer) (api.GenerateResponse, Metrics, error) {
 	var metrics = Metrics{}
 	steam := new(bool)
 	req := api.GenerateRequest{
-		Model:   cc.Model,
-		Prompt:  buf.String(),
-		Stream:  steam,
-		Options: cc.RequestOptions,
+		Model:  cc.Model,
+		Prompt: buf.String(),
+		Stream: steam,
+		Options: map[string]interface{}{
+			"max_tokens":  2 << 13,
+			"temperature": 0.90,
+			"response_format": map[string]interface{}{
+				"type": "json_object",
+			},
+		},
+		Format: llmOutputSchema,
 	}
 
 	callback := make(chan api.GenerateResponse)
-	go func() error {
+	go func() {
 		err := cc.client.Generate(ctx, &req, func(gr api.GenerateResponse) error {
 			callback <- gr
 			return nil
 		})
 		if err != nil {
-			callback <- api.GenerateResponse{}
+			callback <- api.GenerateResponse{
+				DoneReason: err.Error(),
+			}
 		}
-		return err
 	}()
 
 	response := <-callback
@@ -62,7 +79,7 @@ func (cc *CodeConverter) invokeLLM(ctx context.Context, buf bytes.Buffer) (api.G
 	metrics.ConversionEvalTokenCount = response.EvalCount
 
 	if response.Response == "" {
-		return api.GenerateResponse{}, metrics, fmt.Errorf("response is empty")
+		return api.GenerateResponse{}, metrics, fmt.Errorf("response is empty - %s", response.DoneReason)
 	}
 
 	return response, metrics, nil
@@ -111,7 +128,7 @@ func (cc *CodeConverter) makeDeploymentPackageFromLLMResponse(response string, o
 		return nil, fmt.Errorf("response is empty")
 	}
 
-	files := CodeBlockReader(response)
+	files := JsonCodeBlockReader(response)
 	log.Debugf("found %d files", len(files))
 	dp := DeploymentPackage{
 		Metrics: original.Metrics, // copy metrics
@@ -135,6 +152,12 @@ func (cc *CodeConverter) makeDeploymentPackageFromLLMResponse(response string, o
 	dp.TestFiles = original.TestFiles
 
 	return &dp, nil
+}
+
+func JsonCodeBlockReader(response string) map[string]string {
+	var content map[string]string
+	_ = json.Unmarshal([]byte(response), &content)
+	return content
 }
 
 func PrepareRootFile(file string) (string, error) {
@@ -187,16 +210,7 @@ func containsMainMethod(content string) bool {
 }
 
 func (cc *CodeConverter) repromptOnBuildError(ctx context.Context, code *DeploymentPackage, out string) (*DeploymentPackage, Metrics, error) {
-	var codeBlock strings.Builder
-
-	codeBlock.WriteString(fmt.Sprintf("#### main.go\n"))
-	codeBlock.WriteString(code.RootFile)
-	codeBlock.WriteString("\n\n")
-	for _, fname := range code.BuildFiles {
-		codeBlock.WriteString(fmt.Sprintf("#### %s\n", fname))
-		codeBlock.WriteString(code.BuildFiles[fname])
-		codeBlock.WriteString("\n\n")
-	}
+	codeBlock := codeblockGenerator(code)
 
 	var buf bytes.Buffer
 	err := cc.ReportTemplate.Execute(&buf, map[string]interface{}{
@@ -212,7 +226,7 @@ func (cc *CodeConverter) repromptOnBuildError(ctx context.Context, code *Deploym
 		return nil, metrics, err
 	}
 
-	logLLMResponse(code.RootFile, response.Response)
+	cc.logLLMResponse(code.RootFile, response.Response)
 	code.Metrics.AddMetric(metrics)
 
 	//TODO: remove metrics side-effect.
@@ -222,4 +236,43 @@ func (cc *CodeConverter) repromptOnBuildError(ctx context.Context, code *Deploym
 	}
 
 	return new_code, *new_code.Metrics, nil
+}
+
+func (cc *CodeConverter) cleanup(ctx context.Context, code *DeploymentPackage) (*DeploymentPackage, error) {
+	codeBlock := codeblockGenerator(code)
+	var buf bytes.Buffer
+	err := cc.CleanupTemplate.Execute(&buf, map[string]interface{}{
+		"code": codeBlock.String(),
+	})
+	if err != nil {
+		return code, err
+	}
+
+	response, metrics, err := cc.invokeLLM(ctx, buf)
+	if err != nil {
+		code.Metrics.AddMetric(metrics)
+		return code, err
+	}
+	cc.logLLMResponse(code.RootFile, response.Response)
+	//TODO: remove metrics side-effect.
+	new_code, err := cc.makeDeploymentPackageFromLLMResponse(response.Response, code)
+	if err != nil {
+		return code, err
+	}
+
+	return new_code, nil
+}
+
+func codeblockGenerator(code *DeploymentPackage) strings.Builder {
+	var codeBlock strings.Builder
+
+	codeBlock.WriteString(fmt.Sprintf("#### main.go\n"))
+	codeBlock.WriteString(code.RootFile)
+	codeBlock.WriteString("\n\n")
+	for _, fname := range code.BuildFiles {
+		codeBlock.WriteString(fmt.Sprintf("#### %s\n", fname))
+		codeBlock.WriteString(code.BuildFiles[fname])
+		codeBlock.WriteString("\n\n")
+	}
+	return codeBlock
 }

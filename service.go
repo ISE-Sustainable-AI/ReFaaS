@@ -95,7 +95,7 @@ func (service *ConverterService) Start(ctx context.Context) {
 	for request := range service.requestQueue {
 		log.Infof("starting request for %s", request.Id)
 		startTime := time.Now()
-		dp, metrics, err := service.converter.ConvertBestN(4, ctx, &request.sourcePackage)
+		dp, metrics, err := service.converter.ConvertBestN(service.converter.retries, ctx, &request.sourcePackage)
 		endTime := time.Now()
 		if err != nil {
 			log.Debugf("error converting best n for %s: %v", request.Id, err)

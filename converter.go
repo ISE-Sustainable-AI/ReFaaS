@@ -22,26 +22,33 @@ type CodeConverter struct {
 	client *api.Client
 
 	//config options for the converter
-	buildRePrompting bool
-	buildAttempts    int
-	retries          int
+	codeCleanupPrompting bool
+	buildRePrompting     bool
+	buildAttempts        int
+	retries              int
 
 	//expected template fields: code
-	PromptTemplate *template.Template
-	ReportTemplate *template.Template
+	PromptTemplate  *template.Template
+	ReportTemplate  *template.Template
+	CleanupTemplate *template.Template
 	//e.g., deepseek-r1:32b
 	Model string
 	//see @GenerateRequest
 	RequestOptions map[string]interface{}
 	SourceSuffix   string
 	TestHandler    string
+
+	validator ValidationStrategy
 }
 
-//go:embed prompt.md
+//go:embed prompts/stage-one.md
 var defaultPrompt string
 
-//go:embed reprompt.md
+//go:embed prompts/stage-two.md
 var defaultBuildReprompt string
+
+//go:embed prompts/stage-pretwo.md
+var defaultCleanupPrompt string
 
 //go:embed test_handler.txt
 var testHandler string
@@ -52,9 +59,11 @@ type ConverterOptions struct {
 	RequestOptions         map[string]interface{} `json:"request_options"`
 	SourceSuffix           string                 `json:"source_suffix"`
 	PromptTemplate         string                 `json:"prompt_template"`
+	CodeCleanupTemplate    string                 `json:"code_cleanup_template"`
 	RePromptTemplate       string                 `json:"reprompt_template"`
 	TestHandler            string                 `json:"test_handler"`
 	EnableBuildRePrompting bool                   `json:"enable_build_repromting"`
+	EnableClenupPrompting  bool                   `json:"enable_clenup_prompting"`
 	BuildAttempts          int                    `json:"build_attempts"` // only valid with build_reprompting enabled
 	ConversionRetries      int                    `json:"conversion_retries"`
 }
@@ -66,6 +75,10 @@ func (co *ConverterOptions) setDefaults() {
 
 	if co.RePromptTemplate == "" {
 		co.RePromptTemplate = DefaultOptions.RePromptTemplate
+	}
+
+	if co.CodeCleanupTemplate == "" {
+		co.CodeCleanupTemplate = DefaultOptions.CodeCleanupTemplate
 	}
 
 	if co.Model_Name == "" {
@@ -103,10 +116,12 @@ var DefaultOptions = ConverterOptions{
 	RequestOptions:         map[string]interface{}{},
 	PromptTemplate:         defaultPrompt,
 	RePromptTemplate:       defaultBuildReprompt,
+	CodeCleanupTemplate:    defaultCleanupPrompt,
 	TestHandler:            testHandler,
-	EnableBuildRePrompting: false,
-	BuildAttempts:          1,
-	ConversionRetries:      3,
+	EnableBuildRePrompting: true,
+	EnableClenupPrompting:  true,
+	BuildAttempts:          2,
+	ConversionRetries:      2,
 }
 
 func MakeCodeConverter(ops *ConverterOptions) (*CodeConverter, error) {
@@ -131,17 +146,25 @@ func MakeCodeConverter(ops *ConverterOptions) (*CodeConverter, error) {
 		return nil, err
 	}
 
+	cleanup_tmpl, err := template.New("reprompt").Parse(ops.CodeCleanupTemplate)
+	if err != nil {
+		return nil, err
+	}
+
 	return &CodeConverter{
-		client:           api_client,
-		buildRePrompting: ops.EnableBuildRePrompting,
-		buildAttempts:    ops.BuildAttempts,
-		retries:          ops.ConversionRetries,
-		PromptTemplate:   prompt_tmpl,
-		ReportTemplate:   reprompt_tmpl,
-		Model:            ops.Model_Name,
-		RequestOptions:   ops.RequestOptions,
-		SourceSuffix:     ops.SourceSuffix,
-		TestHandler:      ops.TestHandler,
+		client:               api_client,
+		buildRePrompting:     ops.EnableBuildRePrompting,
+		codeCleanupPrompting: ops.EnableBuildRePrompting,
+		buildAttempts:        ops.BuildAttempts,
+		retries:              ops.ConversionRetries,
+		PromptTemplate:       prompt_tmpl,
+		ReportTemplate:       reprompt_tmpl,
+		CleanupTemplate:      cleanup_tmpl,
+		Model:                ops.Model_Name,
+		RequestOptions:       ops.RequestOptions,
+		SourceSuffix:         ops.SourceSuffix,
+		TestHandler:          ops.TestHandler,
+		validator:            MakeAwareSimilarityValidation(0.85),
 	}, nil
 }
 
@@ -175,15 +198,24 @@ func (cc *CodeConverter) convert(ctx context.Context, srcPkg *DeploymentPackage)
 	raw_response, metrics, err := cc.queryLLM(ctx, srcPkg)
 	metrics.AddMetric(*srcPkg.Metrics)
 	if err != nil {
-		return srcPkg, metrics, err
+		return srcPkg, metrics, LLMError{err}
 	}
 
-	logLLMResponse(srcPkg.RootFile, raw_response)
+	cc.logLLMResponse(srcPkg.RootFile, raw_response)
 
-	//TODO: remove metrics side-effect.
 	code, err := cc.makeDeploymentPackageFromLLMResponse(raw_response, srcPkg)
 	if err != nil {
-		return nil, metrics, err
+		return nil, metrics, LLMError{err}
+	}
+
+	code.Metrics.AddMetric(metrics)
+
+	if cc.codeCleanupPrompting {
+		new_code, err := cc.cleanup(ctx, code)
+		if err != nil {
+			return nil, metrics, LLMError{err}
+		}
+		code = new_code
 	}
 
 	log.Debugf("New deployment package: %+v", code)
@@ -200,15 +232,15 @@ func (cc *CodeConverter) convert(ctx context.Context, srcPkg *DeploymentPackage)
 	}
 }
 
-func logLLMResponse(srcPkgCode, raw_response string) {
+func (cc *CodeConverter) logLLMResponse(srcPkgCode, raw_response string) {
+	//TODO: build in a conditional check.
 	fhash := []byte(srcPkgCode)
-	fhash = append(fhash, []byte(time.Now().String())...)
 
-	logf, err := os.OpenFile(fmt.Sprintf("%x.log", sha256.Sum256(fhash)),
+	logf, err := os.OpenFile(fmt.Sprintf("chatlogs/%s_%8x_%d.log", cc.Model, sha256.Sum256(fhash), time.Now().UnixMicro()),
 		os.O_CREATE|os.O_RDWR, 0644)
 	if err == nil {
-		logf.WriteString(raw_response)
-		logf.Close()
+		_, _ = logf.WriteString(raw_response)
+		_ = logf.Close()
 	}
 	log.Debugf("llm response: %+v", raw_response)
 }

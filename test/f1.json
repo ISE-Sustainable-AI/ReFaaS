@@ -1,4 +1,4 @@
 {
   "input": "{\"num1\":12,\"num2\":8}",
-  "output": "{\"response\":{\"statusCode\":200,\"headers\":null,\"multiValueHeaders\":null,\"body\":\"{\"result\":20}\"}}"
+  "output": "{\"response\":{\"statusCode\":200,\"headers\":null,\"multiValueHeaders\":null,\"body\":\"{\\\"result\\\":20}\"}}"
 }

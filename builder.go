@@ -5,8 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/adrg/strutil"
-	"github.com/adrg/strutil/metrics"
 	log "github.com/sirupsen/logrus"
 	"os"
 	"os/exec"
@@ -27,7 +25,7 @@ func (cc *CodeConverter) runTest(ctx context.Context, code *DeploymentPackage) (
 	err = cc.build(ctx, code, dir)
 	if err != nil {
 		log.Debugf("failed to build: %s", err.Error())
-		return false, err
+		return false, CompilationError{err}
 	}
 
 	start_time := time.Now()
@@ -58,7 +56,7 @@ func (cc *CodeConverter) runTest(ctx context.Context, code *DeploymentPackage) (
 	code.Metrics.TestTime = time.Since(start_time)
 	code.Metrics.TestError = err_cnt
 	if err_cnt != 0 {
-		return false, fmt.Errorf("%d tests failed", err_cnt)
+		return false, TestingError{fmt.Errorf("%d tests failed", err_cnt), err_cnt}
 	}
 
 	return true, nil
@@ -80,6 +78,7 @@ func (cc *CodeConverter) build(ctx context.Context, code *DeploymentPackage, dir
 			}
 			code = new_code
 		} else {
+			code.Metrics.BuildTime = time.Since(build_start_time)
 			log.Debugf("failed to build")
 			return err
 		}
@@ -98,8 +97,21 @@ func (cc *CodeConverter) doBuild(ctx context.Context, code *DeploymentPackage, d
 		out, err := cc.runBuildCommands(ctx, dir, cmd)
 		if err != nil {
 			log.Debugf("failed to run build commands: %+v", err)
-			code.Metrics.BuildError += 1
-			return out, err
+			if strings.Contains(err.Error(), " unknown revision") {
+				//atempt to remove go.mod to fix the issue
+				delete(code.BuildFiles, "go.mod")
+				code.BuildCmd = []string{
+					"go mod init example.com",
+					"go mod tidy",
+					"go build -o fn .",
+				}
+				out, err := cc.runBuildCommands(ctx, dir, cmd)
+				return out, err
+			} else {
+				code.Metrics.BuildError += 1
+				return out, err
+			}
+
 		}
 	}
 	return "", nil
@@ -154,30 +166,4 @@ func (cc *CodeConverter) runBuildCommands(ctx context.Context, dir, build_cmd st
 		return stdout.String(), fmt.Errorf("failed to build. %s \n\n %+v", stdout.String(), err)
 	}
 	return stdout.String(), nil
-}
-
-func (cc *CodeConverter) doTest(ctx context.Context, dir string, t *TestFile) (bool, error) {
-	cmd := exec.CommandContext(ctx, "go", "run", ".")
-	cmd.Dir = dir
-	cmd.Env = t.Env
-	_in := strings.NewReader(t.Input)
-	_out := &bytes.Buffer{}
-	_err := &bytes.Buffer{}
-
-	cmd.Stdin = _in
-	cmd.Stdout = _out
-	cmd.Stderr = _err
-
-	err := cmd.Run()
-	if err != nil {
-		return false, fmt.Errorf("test failed. %s - %s - %s", _out.String(), _err.String(), err)
-	}
-	//TODO: to be fair, similarity is not the best measure here but ...
-	cleanOut := MinimizeString(_out.String())
-	sim := strutil.Similarity(cleanOut, t.Output, metrics.NewOverlapCoefficient())
-	if sim < 0.9 {
-		return false, fmt.Errorf("test failed. sim:%f for %s, expected:%s, errors:%s", sim, cleanOut, t.Output, _err.String())
-	} else {
-		return true, nil
-	}
 }

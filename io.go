@@ -2,6 +2,7 @@ package main
 
 import (
 	"archive/zip"
+	log "github.com/sirupsen/logrus"
 	"io"
 	"os"
 	"strings"
@@ -50,6 +51,9 @@ func (cc *CodeConverter) ReadDeploymentPackageFromReader(reader io.ReaderAt, siz
 			}
 			dp.RootFile = string(rootFile)
 		} else if strings.HasPrefix(file.Name, "test/") {
+			if file.FileInfo().IsDir() {
+				continue
+			}
 			fileReader, err := file.Open()
 			if err != nil {
 				return nil, err
@@ -73,10 +77,12 @@ func (cc *CodeConverter) WriteDeploymentPackage(writer io.Writer, dp *Deployment
 		if err != nil {
 			return err
 		}
-		_, err = fp.Write([]byte(content))
+		written, err := fp.Write([]byte(content))
 		if err != nil {
+			log.Debugf("Failed to write to %s: %s", file, err)
 			return err
 		}
+		log.Debugf("Written %s [%d] bytes", file, written)
 		return nil
 	}
 
@@ -84,15 +90,15 @@ func (cc *CodeConverter) WriteDeploymentPackage(writer io.Writer, dp *Deployment
 	if err != nil {
 		return err
 	}
-	for _, file := range dp.TestFiles {
-		err := writeFile(file, dp.TestFiles[file])
+	for name, file := range dp.TestFiles {
+		err := writeFile(name, file)
 		if err != nil {
 			return err
 		}
 	}
 
-	for _, file := range dp.BuildFiles {
-		err := writeFile(file, dp.BuildFiles[file])
+	for name, file := range dp.BuildFiles {
+		err := writeFile(name, file)
 		if err != nil {
 			return err
 		}
