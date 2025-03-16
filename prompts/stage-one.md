@@ -8,68 +8,113 @@ Your task is to translate the following Python code into Go. Please ensure that:
 - you only return the code for the handler function no need to include a main
 - make absolutely sure that the handler function matches this interface `func handle(ctx context.Context, event json.RawMessage) (events.APIGatewayProxyResponse, error)`.
 
-Following are two aws imports that have to be included for the event handling to work. Make sure that they are present beside the other imports needed.
-
+The following is a good starting point to develop the required answer:
 ###
 
-import (
-"github.com/aws/aws-lambda-go/events"
-)
-
-###
-
-The following example shows a working implementation of Input Event handling in go. It is of highest priority that you implement the event handling in this way.
-
-Go input handling example:
-
-###
-```
+```go
 package main
 
 import (
  "github.com/aws/aws-lambda-go/events"
+ "context"
+ "encoding/json"
+ "net/http"
 )
 
+func handle(ctx context.Context, event json.RawMessage) (events.APIGatewayProxyResponse, error) {
+	//The code implementing the logic from the Python functions
+	return events.APIGatewayProxyResponse{
+		StatusCode: http.StatusBadRequest,
+		Body:       "Not yet implemented",
+	}, nil
+}
+```
+
+###
+
+Remember the equivalent to `jsonStr = json.dumps({"message":"hello world"})` in python looks like this:
+```go
+    jsonStr, err := json.Marshel(map[string]interface{}{
+		"message":"hello world"
+	})
+	
+	if err != nil{
+		jsonStr = "{\"error\":\"could not generate json\"}"
+    }
+```
+
+###
+
+Here is how this would look for a simple function that adds numbers with Input Event handling in go. 
+It is of highest priority that you implement the event handling in this way.
+
+Go input handling example:
+
+###
+
+```go
+package main
+
+import (
+	"fmt"
+	"github.com/aws/aws-lambda-go/events"
+	"context"
+	"encoding/json"
+	"log"
+	"net/http"
+)
 
 type requestBodyExample struct {
-    Num1      float64 `json:"num1"`
-    Num2      float64 `json:"num2"`
+	Num1 float64 `json:"num1"`
+	Num2 float64 `json:"num2"`
 }
 
 func handle(ctx context.Context, event json.RawMessage) (events.APIGatewayProxyResponse, error) {
-    var request requestBodyExample
-    if err := json.Unmarshal(event, &request); err != nil {
-        log.Printf("Failed to unmarshal event: %v", err)
-        return events.APIGatewayProxyResponse{
-            StatusCode: http.StatusBadRequest,
-            Body:       "Invalid input",
-        }, nil
-    }
-    return events.APIGatewayProxyResponse{
-            StatusCode: http.StatusOK,
-            Body:       fmt.Sprintf("%d",reqeust.Num1+request.Num2),
-    }, nil
+	var request requestBodyExample
+	if err := json.Unmarshal(event, &request); err != nil {
+		log.Printf("Failed to unmarshal event: %v", err)
+		return events.APIGatewayProxyResponse{
+			StatusCode: http.StatusBadRequest,
+			Body:       "Invalid input",
+		}, nil
+	}
+	return events.APIGatewayProxyResponse{
+		StatusCode: http.StatusOK,
+		Body:       fmt.Sprintf("%v",map[string]interface{}{"result": request.Num1+request.Num2}),
+	}, nil
 }
 ```
 ###
 Now follows the python code that should be translated to go:
 
-```
+```py
 {{ .code }}
 ```
 
+Also see the following example of an input and output of the function:
+#### Input
+```json
+{{ .input }}
+```
+#### Output 
+```json
+{{ .output }}
+```
 ### 
 
 *Critical*:
 1. Let's work this out in a step by step way to be sure we have the right answer.
 2. Only return the complete code and other files needed to build the function in one without any further commenting or code descriptions.
-3. Make absolutely sure that the handler function matches this interfaceL `func handle(ctx context.Context, event json.RawMessage) (events.APIGatewayProxyResponse, error)`.
+3. Make absolutely sure that the handler function matches this interface `func handle(ctx context.Context, event json.RawMessage) (events.APIGatewayProxyResponse, error)`.
 4. Important! Do not include a main function in the output.
 5. Use the `package main` for any go file.
-6. CRITICAL! Do not output anything else, no explanation or justification. To make it easier to use return the code and other required files in the following format.
+6. Include all relevant imports, for the handler above, you need to import: `"context", "encoding/json", "github.com/aws/aws-lambda-go/events"`
+7. CRITICAL! Do not output anything else, no explanation or justification. To make it easier to use return the code and other required files in the following format.
 ###
 EXAMPLE JSON OUTPUT:
+```json
 {
-  "main.go": "package main \r\nimport (\r\n  \"github.com\/aws\/aws-lambda-go\/events\"\r\n)\r\n\r\n\/\/ code from answer ...\r\n\r\nfunc handle(ctx context.Context, event json.RawMessage) (events.APIGatewayProxyResponse, error) {\r\n\/\/ code from answer ...\r\n}",
-  "go.mod": "module github.com\/lambda\/function\r\n\r\ngo 1.23.5\r\n\r\nrequire github.com\/aws\/aws-lambda-go v1.24"
+"main.go": "package main\n\nimport (\n\"github.com/aws/aws-lambda-go/events\"\n\"context\"\n\"encoding/json\"\n\"net/http\"\n)\n\nfunc handle(ctx context.Context, event json.RawMessage) (events.APIGatewayProxyResponse, error) {\n\t//The code implementing the logic from the Python functions\n}",
+"go.mod": "module github.com\/lambda\/function\r\n\r\ngo 1.23.5\r\n\r\nrequire github.com\/aws\/aws-lambda-go v1.24"
 }
+```

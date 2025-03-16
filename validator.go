@@ -8,11 +8,68 @@ import (
 	"github.com/adrg/strutil"
 	"github.com/adrg/strutil/metrics"
 	log "github.com/sirupsen/logrus"
+	"maps"
 	"os/exec"
 	"strings"
+	"time"
 )
 
-func (cc *CodeConverter) doTest(ctx context.Context, dir string, t *TestFile) (bool, error) {
+type GoPackageTester struct {
+	validator ValidationStrategy
+}
+
+func makeGoPackageTester(args map[string]interface{}) Converter {
+	var validator ValidationStrategy
+	if kind, ok := args["strategy"].(string); ok {
+		switch kind {
+		case "json":
+			validator = MakeAwareSimilarityValidation(0.85)
+			break
+		default:
+			validator = &SimilarityValidation{}
+			break
+		}
+	}
+	return &GoPackageTester{
+		validator: validator,
+	}
+}
+
+func (cc *GoPackageTester) Apply(runner *PipelineRunner, request *ConversionRequest) error {
+	start_time := time.Now()
+	err_cnt := 0
+	ctx := runner
+
+	for testfile, err := range maps.Collect(request.WorkingPackage.getTestFiles()) {
+
+		request.Metrics.TestCases[testfile.Name] = false
+		if err != nil {
+			log.Debugf("failed to read test %s: %+v", testfile.Name, err)
+			err_cnt++
+			continue
+		}
+
+		success, err := cc.doTest(ctx, runner.WorkingDir, testfile)
+		if err != nil {
+			err_cnt++
+			log.Debugf("test %s failed: %v", testfile.Name, err)
+			continue
+		}
+		if !success {
+			err_cnt++
+			log.Debugf("test %s failed: %v", testfile.Name, err)
+		}
+		request.Metrics.TestCases[testfile.Name] = true
+	}
+	request.Metrics.TestTime = time.Since(start_time)
+	request.Metrics.TestError = err_cnt
+	if err_cnt != 0 {
+		return TestingError{fmt.Errorf("%d tests failed", err_cnt), err_cnt}
+	}
+	return nil
+}
+
+func (cc *GoPackageTester) doTest(ctx context.Context, dir string, t *TestFile) (bool, error) {
 	cmd := exec.CommandContext(ctx, "go", "run", ".")
 	cmd.Dir = dir
 	cmd.Env = t.Env
@@ -38,7 +95,7 @@ func (cc *CodeConverter) doTest(ctx context.Context, dir string, t *TestFile) (b
 	return true, nil
 }
 
-func (cc *CodeConverter) validateTestOutput(ctx context.Context, testOutput, expectedOutput string) bool {
+func (cc *GoPackageTester) validateTestOutput(ctx context.Context, testOutput, expectedOutput string) bool {
 	if cc.validator != nil {
 		return cc.validator.validate(testOutput, expectedOutput)
 	} else {
@@ -101,9 +158,31 @@ func (vs JsonAwareSimilarityValidation) compareMap(expexted, actual map[string]i
 		if vv, ok := actual[k]; ok {
 			switch v.(type) {
 			case string:
-				sim := strutil.Similarity(v.(string), vv.(string), metrics.NewOverlapCoefficient())
-				if sim < vs.threshold {
-					return false
+				if strings.HasPrefix(v.(string), "{") && strings.HasSuffix(v.(string), "}") && strings.HasPrefix(vv.(string), "{") && strings.HasSuffix(vv.(string), "}") {
+					var expected_value map[string]interface{}
+					var actual_value map[string]interface{}
+
+					var err error
+					err = json.Unmarshal([]byte(v.(string)), &expected_value)
+					if err != nil {
+						sim := strutil.Similarity(v.(string), vv.(string), metrics.NewOverlapCoefficient())
+						if sim < vs.threshold {
+							return false
+						}
+					}
+					err = json.Unmarshal([]byte(vv.(string)), &actual_value)
+					if err != nil {
+						sim := strutil.Similarity(v.(string), vv.(string), metrics.NewOverlapCoefficient())
+						if sim < vs.threshold {
+							return false
+						}
+					}
+					return vs.compareMap(expected_value, actual_value)
+				} else {
+					sim := strutil.Similarity(v.(string), vv.(string), metrics.NewOverlapCoefficient())
+					if sim < vs.threshold {
+						return false
+					}
 				}
 				break
 			case map[string]interface{}:

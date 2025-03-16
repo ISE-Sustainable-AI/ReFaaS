@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-func (cc *CodeConverter) ReadDeploymentPackageFromFile(sourceFile string) (*DeploymentPackage, error) {
+func (cc *PipelineRunner) ReadDeploymentPackageFromFile(sourceFile string) (*DeploymentPackage, error) {
 	fs, err := os.OpenFile(sourceFile, os.O_RDONLY, 0666)
 	if err != nil {
 		return nil, err
@@ -26,20 +26,18 @@ func (cc *CodeConverter) ReadDeploymentPackageFromFile(sourceFile string) (*Depl
 	return dp, nil
 }
 
-func (cc *CodeConverter) ReadDeploymentPackageFromReader(reader io.ReaderAt, size int64) (*DeploymentPackage, error) {
+func (cc *PipelineRunner) ReadDeploymentPackageFromReader(reader io.ReaderAt, size int64) (*DeploymentPackage, error) {
 	dp := DeploymentPackage{
 		RootFile:  "",
 		TestFiles: make(map[string]string),
-		Metrics: &Metrics{
-			TestCases: make(map[string]bool),
-		},
 	}
 	zipfs, err := zip.NewReader(reader, size)
 	if err != nil {
 		return nil, err
 	}
 	for _, file := range zipfs.File {
-		if strings.HasSuffix(file.Name, "."+cc.SourceSuffix) {
+		//TODO: fix me
+		if strings.HasSuffix(file.Name, ".py") || strings.HasSuffix(file.Name, ".go") {
 			fileReader, err := file.Open()
 			if err != nil {
 				return nil, err
@@ -69,7 +67,7 @@ func (cc *CodeConverter) ReadDeploymentPackageFromReader(reader io.ReaderAt, siz
 	return &dp, err
 }
 
-func (cc *CodeConverter) WriteDeploymentPackage(writer io.Writer, dp *DeploymentPackage) error {
+func (cc *PipelineRunner) WriteDeploymentPackage(writer io.Writer, dp *DeploymentPackage) error {
 	zw := zip.NewWriter(writer)
 
 	writeFile := func(file string, content string) error {

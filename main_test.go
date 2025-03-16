@@ -1,7 +1,6 @@
 package main
 
 import (
-	"archive/zip"
 	"bytes"
 	"context"
 	"fmt"
@@ -14,160 +13,41 @@ import (
 	"time"
 )
 
-var testOpts = ConverterOptions{
-	OLLAMA_API_URL: "http://localhost:11434",
-	//OLLAMA_API_URL:         "http://swkgpu1.informatik.uni-hamburg.de:11434",
-	Model_Name:             "qwen2.5-coder:14b",
-	ConversionRetries:      2,
-	BuildAttempts:          2,
-	EnableBuildRePrompting: true,
+func TestPipelineReader(t *testing.T) {
+	reader := bytes.NewReader([]byte(defaultPipelineFile))
+	pipeline, err := PipelineReader(reader)
+	assert.NoError(t, err)
+	assert.NotNil(t, pipeline)
+
+	assert.IsTypef(t, pipeline.FirstTask.Execute, &LLMConverter{}, "FirstTask should be a valid type")
 }
 
 func TestFullConversion(t *testing.T) {
+	reader := bytes.NewReader([]byte(defaultPipelineFile))
+	pipeline, err := PipelineReader(reader)
+	assert.NoError(t, err)
+	assert.NotNil(t, pipeline)
+
 	log.SetLevel(log.DebugLevel)
-	cc, err := MakeCodeConverter(&testOpts)
+	cc, err := MakeCodeConverter(&ConverterOptions{
+		OLLAMA_API_URL,
+	}, pipeline)
+
 	assert.Nil(t, err)
-	var ctx context.Context
-	var cancel context.CancelFunc
-	if deadline, ok := t.Deadline(); ok {
-		ctx, cancel = context.WithDeadline(context.Background(), deadline)
+
+	req, err := cc.ConvertFromFileBest("test/f3.zip")
+	assert.NoError(t, err)
+	assert.NotNil(t, req)
+	if req != nil {
+		assert.Greater(t, len(req.Metrics.TestCases), 0)
+		assert.Greater(t, req.Metrics.BuildTime, time.Duration(0))
+		assert.Greater(t, req.Metrics.TestTime, time.Duration(0))
+
+		t.Logf("%v", req.Metrics)
 	} else {
-		ctx, cancel = context.WithCancel(context.Background())
-	}
-	defer cancel()
-
-	dp, err := cc.ConvertFromFileBestN(cc.retries, ctx, "test/f5.zip")
-	if err != nil {
-		t.Fatal(err)
-	}
-	assert.NotNil(t, dp)
-}
-
-func TestModels(t *testing.T) {
-	log.SetLevel(log.DebugLevel)
-	models := []string{
-		"qwen2.5:32b",
-		"qwen2.5-coder:32b",
-		//"deepseek-r1:8b",
-		//"deepseek-coder-v2:latest",
-		"codellama:34b",
-		"codestral:latest",
+		t.FailNow()
 	}
 
-	var ctx context.Context
-	var cancel context.CancelFunc
-	if deadline, ok := t.Deadline(); ok {
-		ctx, cancel = context.WithDeadline(context.Background(), deadline)
-	} else {
-		ctx, cancel = context.WithCancel(context.Background())
-	}
-	defer cancel()
-
-	results := make(map[string]string)
-	for _, model := range models {
-		testOpts = ConverterOptions{
-			OLLAMA_API_URL:         "http://swkgpu1.informatik.uni-hamburg.de:11434",
-			Model_Name:             model,
-			ConversionRetries:      1,
-			EnableBuildRePrompting: true,
-			BuildAttempts:          2,
-		}
-		cc, err := MakeCodeConverter(&testOpts)
-		assert.Nil(t, err)
-
-		start := time.Now()
-		dp, err := cc.ConvertFromFileBestN(cc.retries, ctx, "test/example.zip")
-		duration := time.Since(start)
-		if err != nil {
-			results[model] = fmt.Sprintf("failed to convert, %d - %+v", duration, err)
-		} else {
-			results[model] = fmt.Sprintf("successfully converted, %d - %+v", duration, dp.Metrics)
-		}
-	}
-
-	fs, err := os.OpenFile("ModelTestReport.txt", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		log.Fatal(err)
-	}
-	for key, result := range results {
-		fs.WriteString(fmt.Sprintf("%s;%s\n\n", key, result))
-	}
-	fs.Close()
-}
-
-func TestFullConversionWithRePrompting(t *testing.T) {
-	log.SetLevel(log.DebugLevel)
-	ops := testOpts
-	ops.EnableBuildRePrompting = true
-	ops.BuildAttempts = 3
-	ops.ConversionRetries = 2
-
-	cc, err := MakeCodeConverter(&ops)
-	assert.Nil(t, err)
-	var ctx context.Context
-	var cancel context.CancelFunc
-	if deadline, ok := t.Deadline(); ok {
-		ctx, cancel = context.WithDeadline(context.Background(), deadline)
-	} else {
-		ctx, cancel = context.WithCancel(context.Background())
-	}
-	defer cancel()
-
-	dp, err := cc.ConvertFromFileBestN(cc.retries, ctx, "test/example.zip")
-	if err != nil {
-		t.Fatal(err)
-	}
-	assert.NotNil(t, dp)
-	assert.NotNil(t, dp.Metrics)
-
-	log.Debugf("%+v", dp.Metrics)
-}
-
-func TestStability(t *testing.T) {
-	log.SetLevel(log.DebugLevel)
-	for i := 0; i < 10; i++ {
-		TestFullConversion(t)
-	}
-}
-
-func TestCodeConverter_queryLLM(t *testing.T) {
-	cc, err := MakeCodeConverter(&testOpts)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var ctx context.Context
-	var cancel context.CancelFunc
-	if deadline, ok := t.Deadline(); ok {
-		ctx, cancel = context.WithDeadline(context.Background(), deadline)
-	} else {
-		ctx, cancel = context.WithCancel(context.Background())
-	}
-
-	testCode, err := read("test/test.py")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	defer cancel()
-	result, _, err := cc.queryLLM(ctx, &DeploymentPackage{
-		RootFile: testCode,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	t.Log(result)
-
-}
-
-func TestCodeParsing(t *testing.T) {
-	//open text_case.txt
-	var cases = []string{"test/test_case1.txt", "test/test_case2.txt", "test/test_case3.txt"}
-	for _, c := range cases {
-		t.Run(c, func(t *testing.T) {
-			testByResponseLog(t, c)
-		})
-	}
 }
 
 func TestLogCase(t *testing.T) {
@@ -186,42 +66,6 @@ func TestLogCase(t *testing.T) {
 	}
 }
 
-func testByResponseLog(t *testing.T, casefile string) {
-	test_case, err := read(casefile)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	cc, err := MakeCodeConverter(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	original := DeploymentPackage{
-		TestFiles: make(map[string]string),
-		Metrics: &Metrics{
-			TestCases: make(map[string]bool),
-		},
-	}
-
-	dp, err := cc.makeDeploymentPackageFromLLMResponse(test_case, &original)
-	if err != nil {
-		t.Fatalf("failed to make dp for %s, due %+v", casefile, err)
-	}
-	assert.NotNil(t, dp)
-	assert.NotEmpty(t, dp.RootFile)
-}
-
-func TestCompile(t *testing.T) {
-	//open text_case.txt
-	var cases = []string{"test/test_case1.txt", "test/test_case2.txt", "test/test_case3.txt"}
-	for _, c := range cases {
-		t.Run(c, func(t *testing.T) {
-			testCompileByResponseLog(t, c)
-		})
-	}
-}
-
 func testCompileByResponseLog(t *testing.T, test_case string) {
 	tc, err := os.OpenFile(test_case, os.O_RDONLY, 0644)
 	if err != nil {
@@ -230,10 +74,6 @@ func testCompileByResponseLog(t *testing.T, test_case string) {
 
 	defer tc.Close()
 	test_bytes, err := io.ReadAll(tc)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cc, err := MakeCodeConverter(&testOpts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -252,31 +92,48 @@ func testCompileByResponseLog(t *testing.T, test_case string) {
 	}
 
 	original := DeploymentPackage{
-		TestFiles: mk,
-		Metrics: &Metrics{
-			TestCases: make(map[string]bool),
-		},
+		TestFiles:  mk,
+		BuildFiles: make(map[string]string),
+		BuildCmd:   make([]string, 0),
 	}
 
-	dp, err := cc.makeDeploymentPackageFromLLMResponse(string(test_bytes), &original)
+	reader := GoLLMDeploymentReader{}
+
+	dp, err := reader.makeDeploymentFile(string(test_bytes), &original)
 	if err != nil {
 		t.Fatal(err)
 	}
 	assert.NotNil(t, dp)
-	var ctx context.Context
-	var cancel context.CancelFunc
-	if deadline, ok := t.Deadline(); ok {
-		ctx, cancel = context.WithDeadline(context.Background(), deadline)
-	} else {
-		ctx, cancel = context.WithCancel(context.Background())
+
+	task := ConversionTask{
+		ID:            "test",
+		Execute:       makeGolangBuilder(nil),
+		CanApply:      nil,
+		RetryCount:    0,
+		MaxRetryCount: 1,
+		RetryDelay:    0,
+		Next:          nil,
+		OnFailure:     nil,
+		Validation: makeGoPackageTester(map[string]interface{}{
+			"strategy": "json",
+		}),
 	}
-	defer cancel()
-	success, err := cc.runTest(ctx, dp)
+	pipeline := NewPipeline(&task)
+	runner := &PipelineRunner{
+		Context:  context.Background(),
+		pipeline: nil,
+		client:   nil,
+	}
+
+	req := MakeConversionRequest(dp)
+	req.WorkingPackage = req.SourcePackage
+
+	err = pipeline.Execute(runner, req)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	assert.True(t, success)
+	assert.Nil(t, req.err)
 }
 
 func read(fname string) (string, error) {
@@ -297,53 +154,7 @@ func TestMakeAwareSimilarityValidation(t *testing.T) {
 	jsonValidator := MakeAwareSimilarityValidation(0.8)
 
 	result := jsonValidator.validate("{\"response\":{\"statusCode\":200,\"headers\":null,\"multiValueHeaders\":null,\"body\":\"{\\\"result\\\":20}\"}}",
-		"{\"response\":{\"statusCode\":200,\"headers\":null,\"multiValueHeaders\":null,\"body\":{\"result\":20}}}")
+		"{\"statusCode\":200,\"headers\":null,\"multiValueHeaders\":null,\"body\":{\"result\":20}}")
 
 	assert.True(t, result)
-}
-
-func TestPackageing(t *testing.T) {
-	cc, err := MakeCodeConverter(nil)
-	assert.Nil(t, err)
-
-	dp, err := cc.ReadDeploymentPackageFromFile("test/example.zip")
-	assert.Nil(t, err)
-	assert.NotNil(t, dp)
-
-	dp.BuildFiles = map[string]string{"go.mod": "TEST"}
-	dp.BuildCmd = []string{"go mod init", "go build ."}
-
-	var buf bytes.Buffer
-	err = cc.WriteDeploymentPackage(&buf, dp)
-	assert.Nil(t, err)
-
-	reader := bytes.NewReader(buf.Bytes())
-	zipfs, err := zip.NewReader(reader, reader.Size())
-	assert.Nil(t, err)
-
-	ndp := make(map[string]string)
-
-	for _, file := range zipfs.File {
-		if file.FileInfo().IsDir() {
-			continue
-		}
-		r, err := file.Open()
-		assert.Nil(t, err)
-		data, err := io.ReadAll(r)
-		assert.Nil(t, err)
-		ndp[file.Name] = string(data)
-		_ = r.Close()
-	}
-
-	assert.Contains(t, ndp, "main.go")
-	assert.Contains(t, ndp, "build.sh")
-	assert.Contains(t, ndp, "go.mod")
-	assert.Contains(t, ndp, "test/f1.json")
-	assert.Contains(t, ndp, "test/f2.json")
-
-	assert.NotEmpty(t, ndp["main.go"], "main.go was empty")
-	assert.NotEmpty(t, ndp["build.sh"], "build.sh was empty")
-	assert.NotEmpty(t, ndp["go.mod"], "go.mod was empty")
-	assert.NotEmpty(t, ndp["test/f1.json"], "test/f1.json was empty")
-	assert.NotEmpty(t, ndp["test/f2.json"], "test/f2.json was empty")
 }

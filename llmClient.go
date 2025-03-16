@@ -1,35 +1,132 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
-	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"github.com/ollama/ollama/api"
 	log "github.com/sirupsen/logrus"
-	"go/ast"
-	"go/parser"
-	"go/token"
-	"regexp"
+	"iter"
+	"os"
 	"strings"
+	"text/template"
+	"time"
 )
 
-func (cc *CodeConverter) queryLLM(ctx context.Context, code *DeploymentPackage) (string, Metrics, error) {
+type LLMPackageReader interface {
+	makeDeploymentFile(rawLLMResponse string, original *DeploymentPackage) (*DeploymentPackage, error)
+}
+
+type LLMConverter struct {
+	template       *template.Template
+	ModelName      string                 `json:"model_name"`
+	RequestOptions map[string]interface{} `json:"request_options"`
+	reader         LLMPackageReader
+}
+
+func ReaderFactory(name string) LLMPackageReader {
+	switch name {
+	case "go":
+		return GoLLMDeploymentReader{}
+	}
+	return BasicLLMDeploymentReader{}
+}
+
+func makeLLMConverter(args map[string]interface{}) Converter {
+	model, ok := args["model_name"].(string)
+	if !ok {
+		log.Fatal("model_name must be a string")
+		return nil
+	}
+
+	prompt, ok := args["prompt"].(string)
+	if !ok {
+		log.Fatal("prompt must be a string")
+		return nil
+	}
+
+	prompt_tmpl, err := template.New("prompt").Parse(prompt)
+	if err != nil {
+		log.Fatalf("Failed to parse prompt template: %s", err)
+		return nil
+	}
+
+	var reader LLMPackageReader
+	if readerName, ok := args["reader"].(string); ok {
+		reader = ReaderFactory(readerName)
+	} else {
+		reader = BasicLLMDeploymentReader{}
+	}
+
+	delete(args, "model_name")
+	delete(args, "prompt")
+	delete(args, "reader")
+
+	return &LLMConverter{
+		template:       prompt_tmpl,
+		ModelName:      model,
+		RequestOptions: args,
+		reader:         reader,
+	}
+}
+
+func (cc *LLMConverter) Apply(runner *PipelineRunner, code *ConversionRequest) error {
 	var buf bytes.Buffer
-	err := cc.PromptTemplate.Execute(&buf, map[string]interface{}{
-		"code": code.RootFile,
+
+	codeBlock := codeBlockGenerator(code.WorkingPackage)
+
+	next, stop := iter.Pull2(code.SourcePackage.getTestFiles())
+	result, err, valid := next()
+	stop()
+	if err != nil || !valid {
+		result = &TestFile{}
+	}
+	err = cc.template.Execute(&buf, map[string]interface{}{
+		"code":     codeBlock.String(),
+		"issue":    fmt.Sprintf("%v", code.err),
+		"original": code.SourcePackage.RootFile,
+		"input":    result.Input,
+		"output":   result.Output,
 	})
 	if err != nil {
-		return "", Metrics{}, err
+		code.err = err
+		return err
 	}
 
-	response, metrics, err := cc.invokeLLM(ctx, buf)
+	response, metrics, err := cc.invokeLLM(runner, buf)
+	code.Metrics.AddMetric(metrics)
 	if err != nil {
-		return "", metrics, err
+		return err
 	}
 
-	return response.Response, metrics, nil
+	cc.logLLMResponse(code.SourcePackage.RootFile, response.Response, buf.String())
+	newPackage, err := cc.reader.makeDeploymentFile(response.Response, code.WorkingPackage)
+	code.WorkingPackage = newPackage
+
+	if err != nil {
+		code.err = LLMError{err}
+		return code.err
+	}
+
+	return nil
+}
+
+func (cc *LLMConverter) logLLMResponse(srcPkgCode, raw_response, query string) {
+	fhash := []byte(srcPkgCode)
+	fname := fmt.Sprintf("chatlogs/%s_%8x_%d.log", cc.ModelName, sha256.Sum256(fhash), time.Now().UnixMicro())
+	logf, err := os.OpenFile(fname,
+		os.O_CREATE|os.O_RDWR, 0644)
+	defer logf.Close()
+	var written int
+	if err == nil {
+		logf.WriteString("# Query\n\n")
+		logf.WriteString(query)
+		logf.WriteString("\n\n# Response\n\n```\n")
+		written, _ = logf.WriteString(raw_response)
+		logf.WriteString("\n```\n")
+	}
+	log.Debugf("logged llm response to: %s with %d bytes", fname, written)
 }
 
 var llmOutputSchema = json.RawMessage(`{
@@ -40,16 +137,20 @@ var llmOutputSchema = json.RawMessage(`{
   }
 }`)
 
-func (cc *CodeConverter) invokeLLM(ctx context.Context, buf bytes.Buffer) (api.GenerateResponse, Metrics, error) {
+func (cc *LLMConverter) invokeLLM(runner *PipelineRunner, buf bytes.Buffer) (api.GenerateResponse, Metrics, error) {
 	var metrics = Metrics{}
 	steam := new(bool)
 	req := api.GenerateRequest{
-		Model:  cc.Model,
+		Model:  cc.ModelName,
 		Prompt: buf.String(),
 		Stream: steam,
+		//TODO: respect configuration
 		Options: map[string]interface{}{
-			"max_tokens":  2 << 13,
-			"temperature": 0.90,
+			//"max_tokens":  2 << 14,
+			//"temperature": 1.0,
+			//"top_k":       64,
+			//"top_p":       0.95,
+			//"min_p":       0.0,
 			"response_format": map[string]interface{}{
 				"type": "json_object",
 			},
@@ -59,7 +160,7 @@ func (cc *CodeConverter) invokeLLM(ctx context.Context, buf bytes.Buffer) (api.G
 
 	callback := make(chan api.GenerateResponse)
 	go func() {
-		err := cc.client.Generate(ctx, &req, func(gr api.GenerateResponse) error {
+		err := runner.client.Generate(runner, &req, func(gr api.GenerateResponse) error {
 			callback <- gr
 			return nil
 		})
@@ -85,194 +186,22 @@ func (cc *CodeConverter) invokeLLM(ctx context.Context, buf bytes.Buffer) (api.G
 	return response, metrics, nil
 }
 
-func CodeBlockReader(filecontents string) map[string]string {
-	file := strings.NewReader(filecontents)
-	scanner := bufio.NewScanner(file)
-	codeBlockRegex := regexp.MustCompile("^```")
-	labelRegex := regexp.MustCompile(`^#### (.+)$`)
-	insideCodeBlock := false
-	var label string
-	var codeContent string
-	codeBlocks := make(map[string]string)
-
-	for scanner.Scan() {
-		line := scanner.Text()
-		if labelMatch := labelRegex.FindStringSubmatch(line); labelMatch != nil {
-			if insideCodeBlock && label != "" {
-				codeBlocks[label] = codeContent
-				codeContent = ""
-			}
-			label = labelMatch[1]
-		} else if codeBlockRegex.MatchString(line) {
-			if insideCodeBlock {
-				if label != "" {
-					codeBlocks[label] = codeContent
-				} else {
-					codeBlocks["main.go"] = codeContent
-				}
-				codeContent = ""
-				insideCodeBlock = false
-			} else {
-				insideCodeBlock = true
-			}
-		} else if insideCodeBlock {
-			codeContent += line + "\n"
-		}
-	}
-
-	return codeBlocks
-}
-
-func (cc *CodeConverter) makeDeploymentPackageFromLLMResponse(response string, original *DeploymentPackage) (*DeploymentPackage, error) {
-	if response == "" {
-		return nil, fmt.Errorf("response is empty")
-	}
-
-	files := JsonCodeBlockReader(response)
-	log.Debugf("found %d files", len(files))
-	dp := DeploymentPackage{
-		Metrics: original.Metrics, // copy metrics
-	}
-	if root_file, ok := files["main.go"]; ok {
-		root_file, err := PrepareRootFile(root_file)
-		if err != nil {
-			return nil, fmt.Errorf("failed to prepare root file: %w", err)
-		}
-		dp.RootFile = root_file
-		delete(files, "main.go")
-	} else {
-		return nil, fmt.Errorf("main.go not found in response")
-	}
-	dp.BuildFiles = files
-	dp.BuildCmd = []string{"go mod tidy", "go build -o fn ."}
-	if _, ok := files["go.mod"]; !ok {
-		dp.BuildCmd = append([]string{"go mod init example.com"}, dp.BuildCmd...)
-	}
-
-	dp.TestFiles = original.TestFiles
-
-	return &dp, nil
-}
-
 func JsonCodeBlockReader(response string) map[string]string {
 	var content map[string]string
 	_ = json.Unmarshal([]byte(response), &content)
 	return content
 }
 
-func PrepareRootFile(file string) (string, error) {
-	if file == "" {
-		return "", fmt.Errorf("file is empty")
-	}
-
-	if containsMainMethod(file) {
-		log.Debugf("file %s contains main method", file)
-		return removeMainMethod(file), nil
-	} else {
-		return file, nil
-	}
-}
-
-func removeMainMethod(content string) string {
-	fset := token.NewFileSet()
-	node, err := parser.ParseFile(fset, "main.go", content, parser.AllErrors)
-	if err != nil {
-		log.Debugf("failed to parse main.go content: %v", err)
-		return content
-	}
-	var remove_lambda_import = false
-	var output strings.Builder
-	for _, decl := range node.Decls {
-		if funcDecl, ok := decl.(*ast.FuncDecl); ok {
-			if funcDecl.Name.Name == "main" {
-				//XXX: fixing a typical mistake but in a somewhat crude way. A better approach would be repromting...
-				main_contains_Lambda_api := strings.Contains(content[funcDecl.Pos()-1:funcDecl.End()], "lambda")
-				lambda_api_usages := strings.Count(content[:funcDecl.Pos()-1], "lambda.") + strings.Count(content[funcDecl.End():], "lambda.")
-				if main_contains_Lambda_api && lambda_api_usages <= 1 {
-					//We need to remove the import.
-					remove_lambda_import = true
-				}
-				continue // Skip the main function
-			}
-		}
-		output.WriteString(content[decl.Pos()-1 : decl.End()]) // Append remaining code
-	}
-	if remove_lambda_import {
-		removed_import := strings.Replace(output.String(), "\"github.com/aws/aws-lambda-go/lambda\"", "", 1)
-		return removed_import
-	}
-	return output.String()
-}
-
-func containsMainMethod(content string) bool {
-	mainMethodRegex := regexp.MustCompile(`func main\(\)`) // Regex to check for main function
-	return mainMethodRegex.MatchString(content)
-}
-
-func (cc *CodeConverter) repromptOnBuildError(ctx context.Context, code *DeploymentPackage, out string) (*DeploymentPackage, Metrics, error) {
-	codeBlock := codeblockGenerator(code)
-
-	var buf bytes.Buffer
-	err := cc.ReportTemplate.Execute(&buf, map[string]interface{}{
-		"code":  codeBlock.String(),
-		"error": out,
-	})
-	if err != nil {
-		return nil, Metrics{}, err
-	}
-
-	response, metrics, err := cc.invokeLLM(ctx, buf)
-	if err != nil {
-		return nil, metrics, err
-	}
-
-	cc.logLLMResponse(code.RootFile, response.Response)
-	code.Metrics.AddMetric(metrics)
-
-	//TODO: remove metrics side-effect.
-	new_code, err := cc.makeDeploymentPackageFromLLMResponse(response.Response, code)
-	if err != nil {
-		return nil, *code.Metrics, err
-	}
-
-	return new_code, *new_code.Metrics, nil
-}
-
-func (cc *CodeConverter) cleanup(ctx context.Context, code *DeploymentPackage) (*DeploymentPackage, error) {
-	codeBlock := codeblockGenerator(code)
-	var buf bytes.Buffer
-	err := cc.CleanupTemplate.Execute(&buf, map[string]interface{}{
-		"code": codeBlock.String(),
-	})
-	if err != nil {
-		return code, err
-	}
-
-	response, metrics, err := cc.invokeLLM(ctx, buf)
-	if err != nil {
-		code.Metrics.AddMetric(metrics)
-		return code, err
-	}
-	cc.logLLMResponse(code.RootFile, response.Response)
-	//TODO: remove metrics side-effect.
-	new_code, err := cc.makeDeploymentPackageFromLLMResponse(response.Response, code)
-	if err != nil {
-		return code, err
-	}
-
-	return new_code, nil
-}
-
-func codeblockGenerator(code *DeploymentPackage) strings.Builder {
+func codeBlockGenerator(code *DeploymentPackage) strings.Builder {
 	var codeBlock strings.Builder
 
-	codeBlock.WriteString(fmt.Sprintf("#### main.go\n"))
+	codeBlock.WriteString(fmt.Sprintf("#### main.%s\n```go\n", code.Suffix))
 	codeBlock.WriteString(code.RootFile)
-	codeBlock.WriteString("\n\n")
+	codeBlock.WriteString("```\n\n")
 	for _, fname := range code.BuildFiles {
-		codeBlock.WriteString(fmt.Sprintf("#### %s\n", fname))
+		codeBlock.WriteString(fmt.Sprintf("\n#### %s\n```go\n", fname))
 		codeBlock.WriteString(code.BuildFiles[fname])
-		codeBlock.WriteString("\n\n")
+		codeBlock.WriteString("```\n\n")
 	}
 	return codeBlock
 }

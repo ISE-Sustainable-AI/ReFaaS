@@ -3,7 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/json"
+	_ "embed"
 	"fmt"
 	log "github.com/sirupsen/logrus"
 	"os"
@@ -13,86 +13,64 @@ import (
 	"time"
 )
 
-func (cc *CodeConverter) runTest(ctx context.Context, code *DeploymentPackage) (bool, error) {
-	dir, err := os.MkdirTemp("", "fn_lmm")
-	if err != nil {
-		return false, err
-	}
-	defer os.RemoveAll(dir)
+//go:embed test_handler.txt
+var goTestHandler string
 
-	code.BuildFiles["handler.go"] = string(cc.TestHandler)
-	//Build testable version
-	err = cc.build(ctx, code, dir)
-	if err != nil {
-		log.Debugf("failed to build: %s", err.Error())
-		return false, CompilationError{err}
-	}
-
-	start_time := time.Now()
-	err_cnt := 0
-
-	for test_name, test := range code.TestFiles {
-		testfile := TestFile{}
-		code.Metrics.TestCases[test_name] = false
-		err := json.Unmarshal([]byte(test), &testfile)
-		if err != nil {
-			log.Debugf("failed to read test %s: %+v", test_name, err)
-			err_cnt++
-			continue
-		}
-
-		success, err := cc.doTest(ctx, dir, &testfile)
-		if err != nil {
-			err_cnt++
-			log.Debugf("test %s failed: %v", test_name, err)
-			continue
-		}
-		if !success {
-			err_cnt++
-			log.Debugf("test %s failed: %v", test_name, err)
-		}
-		code.Metrics.TestCases[test_name] = true
-	}
-	code.Metrics.TestTime = time.Since(start_time)
-	code.Metrics.TestError = err_cnt
-	if err_cnt != 0 {
-		return false, TestingError{fmt.Errorf("%d tests failed", err_cnt), err_cnt}
-	}
-
-	return true, nil
+type GolangBuilder struct {
+	TestHandler string
 }
 
-func (cc *CodeConverter) build(ctx context.Context, code *DeploymentPackage, dir string) error {
-	build_start_time := time.Now()
-	for i := 0; i < cc.buildAttempts; i++ {
-		out, err := cc.doBuild(ctx, code, dir)
-		if err == nil {
-			break //we are done
-		} else if cc.buildRePrompting && i < cc.buildAttempts-1 {
-			//TODO: repromt and rebuild out.
-			new_code, metrics, err := cc.repromptOnBuildError(ctx, code, out)
-			if err != nil {
-				log.Debugf("failed to repromt: %v", err)
-				code.Metrics.AddMetric(metrics)
-				return err
-			}
-			code = new_code
-		} else {
-			code.Metrics.BuildTime = time.Since(build_start_time)
-			log.Debugf("failed to build")
-			return err
-		}
+func makeGolangBuilder(args map[string]interface{}) Converter {
+	if handler, ok := args["handler"].(string); ok {
+		return &GolangBuilder{TestHandler: handler}
+	} else {
+		return &GolangBuilder{TestHandler: goTestHandler}
 	}
-	code.Metrics.BuildTime = time.Since(build_start_time)
+}
+
+func (cc *GolangBuilder) Apply(runner *PipelineRunner, request *ConversionRequest) error {
+	//let's keep this clean
+	if runner.WorkingDir != "" {
+		defer os.RemoveAll(runner.WorkingDir)
+	}
+	start := time.Now()
+	dir, err := os.MkdirTemp("", "fn_lmm")
+	if err != nil {
+		return err
+	}
+	runner.WorkingDir = dir
+	code := request.WorkingPackage
+	code.BuildFiles["handler.go"] = string(cc.TestHandler)
+	//Build testable version
+	err = cc.build(request, dir)
+	request.Metrics.BuildTime = time.Since(start)
+	if err != nil {
+		log.Debugf("failed to build: %s", err.Error())
+		return CompilationError{err}
+	}
+
 	return nil
 }
 
-func (cc *CodeConverter) doBuild(ctx context.Context, code *DeploymentPackage, dir string) (string, error) {
+func (cc *GolangBuilder) build(requests *ConversionRequest, dir string) error {
+	code := requests.WorkingPackage
+
+	_, err := cc.doBuild(code, dir)
+	if err != nil {
+		log.Debugf("failed to build")
+		return err
+	}
+
+	return nil
+}
+
+func (cc *GolangBuilder) doBuild(code *DeploymentPackage, dir string) (string, error) {
 	err := cc.prepareBuildFolder(dir, code)
 	if err != nil {
 		log.Debugf("failed to prepare build folder: %s", err.Error())
 		return "", err
 	}
+	ctx := context.Background()
 	for _, cmd := range code.BuildCmd {
 		out, err := cc.runBuildCommands(ctx, dir, cmd)
 		if err != nil {
@@ -108,7 +86,6 @@ func (cc *CodeConverter) doBuild(ctx context.Context, code *DeploymentPackage, d
 				out, err := cc.runBuildCommands(ctx, dir, cmd)
 				return out, err
 			} else {
-				code.Metrics.BuildError += 1
 				return out, err
 			}
 
@@ -117,8 +94,7 @@ func (cc *CodeConverter) doBuild(ctx context.Context, code *DeploymentPackage, d
 	return "", nil
 }
 
-func (cc *CodeConverter) prepareBuildFolder(dir string, code *DeploymentPackage) error {
-	//TODO: delete
+func (cc *GolangBuilder) prepareBuildFolder(dir string, code *DeploymentPackage) error {
 	writeToDir := func(fname, code string) error {
 		fpath := filepath.Join(dir, fname)
 		if _, err := os.Stat(fpath); err == nil {
@@ -152,7 +128,7 @@ func (cc *CodeConverter) prepareBuildFolder(dir string, code *DeploymentPackage)
 	return nil
 }
 
-func (cc *CodeConverter) runBuildCommands(ctx context.Context, dir, build_cmd string) (string, error) {
+func (cc *GolangBuilder) runBuildCommands(ctx context.Context, dir, build_cmd string) (string, error) {
 	cmds := strings.Split(build_cmd, " ")
 
 	cmd := exec.CommandContext(ctx, cmds[0], cmds[1:]...)

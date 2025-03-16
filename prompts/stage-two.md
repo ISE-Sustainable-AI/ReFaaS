@@ -1,19 +1,25 @@
 You're a software engineer with experience in writing Go programs for AWS Lambda.
 
 You have the following existing code:
-```
-{{.code}}
-```
+
+{{ .code }}
+
 
 When compiling you got the following error:
 ```
-{{.error}}
+{{ .issue }}
 ```
 
 Now your task is to do resolve this issue. Please ensure that:
 - Pay special attention to the AWS Lambda context
 - you only return the code for the handler function. There is absolutely no need to include a main.
 - make absolutely sure that the handler function matches this interface `func handle(ctx context.Context, event json.RawMessage) (events.APIGatewayProxyResponse, error)`.
+
+Remember the original function that we wanted to build came from the following python function. Make sure that we fix the issue in our go function while still keeping the logiic of the original.
+
+```py
+{{ .original }}
+```
 
 ### 
 
@@ -28,8 +34,7 @@ Now your task is to do resolve this issue. Please ensure that:
 EXAMPLE JSON OUTPUT:
 ```json
 {
-  "main.go": "package main \r\nimport (\r\n  \"github.com\/aws\/aws-lambda-go\/events\"\r\n)\r\n\r\n\/\/ code from answer ...\r\n\r\nfunc handle(ctx context.Context, event json.RawMessage) (events.APIGatewayProxyResponse, error) {\r\n\/\/ code from answer ...\r\n}",
-  "go.mod": "module github.com\/lambda\/function\r\n\r\ngo 1.23.5\r\n\r\nrequire github.com\/aws\/aws-lambda-go v1.24",
-  
+  "main.go": "package main\n\nimport (\n\"github.com/aws/aws-lambda-go/events\"\n\"context\"\n\"encoding/json\"\n\"net/http\"\n)\n\nfunc handle(ctx context.Context, event json.RawMessage) (events.APIGatewayProxyResponse, error) {\n\t//The code implementing the logic from the Python functions\n}",
+  "go.mod": "module github.com\/lambda\/function\r\n\r\ngo 1.23.5\r\n\r\nrequire github.com\/aws\/aws-lambda-go v1.24"
 }
 ```

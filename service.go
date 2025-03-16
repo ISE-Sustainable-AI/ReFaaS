@@ -15,17 +15,10 @@ import (
 	"time"
 )
 
-type ConverterRequest struct {
-	Id               uuid.UUID `json:"id"`
-	sourcePackage    DeploymentPackage
-	resultingPackage DeploymentPackage
-	err              error
-}
-
 type ConverterService struct {
-	converter    *CodeConverter
-	requestQueue chan *ConverterRequest
-	results      map[uuid.UUID]*ConverterRequest
+	converter    *PipelineRunner
+	requestQueue chan *ConversionRequest
+	results      map[uuid.UUID]*ConversionRequest
 	metrics      map[uuid.UUID]Metrics
 	mutex        sync.RWMutex
 }
@@ -60,20 +53,16 @@ func MakeConverterService() error {
 	options := DefaultOptions
 
 	options.OLLAMA_API_URL = setOrDefault("OLLAMA_API_URL", options.OLLAMA_API_URL)
-	options.SourceSuffix = setOrDefault("SOURCE_SUFFIX", options.SourceSuffix)
-	options.Model_Name = setOrDefault("MODEL_NAME", options.Model_Name)
-	options.PromptTemplate = setFileFromEnv("PROMPT_TEMPLATE_FILE", options.PromptTemplate)
-	options.TestHandler = setFileFromEnv("TEST_HANDLER_FILE", options.TestHandler)
 
-	converter, err := MakeCodeConverter(&options)
+	converter, err := MakeCodeConverter(&options, nil)
 	if err != nil {
 		return err
 	}
 
 	sv := ConverterService{
 		converter:    converter,
-		requestQueue: make(chan *ConverterRequest, 100),
-		results:      make(map[uuid.UUID]*ConverterRequest),
+		requestQueue: make(chan *ConversionRequest, 100),
+		results:      make(map[uuid.UUID]*ConversionRequest),
 		metrics:      make(map[uuid.UUID]Metrics),
 	}
 
@@ -95,22 +84,20 @@ func (service *ConverterService) Start(ctx context.Context) {
 	for request := range service.requestQueue {
 		log.Infof("starting request for %s", request.Id)
 		startTime := time.Now()
-		dp, metrics, err := service.converter.ConvertBestN(service.converter.retries, ctx, &request.sourcePackage)
+		err := service.converter.Convert(request)
 		endTime := time.Now()
 		if err != nil {
 			log.Debugf("error converting best n for %s: %v", request.Id, err)
-			request.err = err
 		} else {
 			log.Debugf("converting best n for %s took %v", request.Id, endTime.Sub(startTime))
-			request.resultingPackage = *dp
 		}
 
-		metrics.StartTime = startTime
-		metrics.EndTime = endTime
-		metrics.TotalTime = endTime.Sub(startTime)
+		request.Metrics.StartTime = startTime
+		request.Metrics.EndTime = endTime
+		request.Metrics.TotalTime = endTime.Sub(startTime)
 
 		service.mutex.Lock()
-		service.metrics[request.Id] = metrics
+		service.metrics[request.Id] = *request.Metrics
 		service.results[request.Id] = request
 		service.mutex.Unlock()
 	}
@@ -148,7 +135,7 @@ func (service *ConverterService) pollHandler(w http.ResponseWriter, r *http.Requ
 			} else {
 				w.Header().Set("Content-Type", "application/zip")
 				var buf bytes.Buffer
-				err = service.converter.WriteDeploymentPackage(&buf, &resp.resultingPackage)
+				err = service.converter.WriteDeploymentPackage(&buf, resp.WorkingPackage)
 				if err != nil {
 					sendError(w, err)
 				} else {
@@ -220,10 +207,7 @@ func (service *ConverterService) uploadHandler(w http.ResponseWriter, r *http.Re
 		http.Error(w, "Error reading file", http.StatusInternalServerError)
 	}
 
-	request := &ConverterRequest{
-		Id:            uuid.New(),
-		sourcePackage: *dp,
-	}
+	request := MakeConversionRequest(dp)
 
 	service.requestQueue <- request
 	log.Infof("got new conversion request for %s", request.Id)
@@ -244,25 +228,24 @@ func (r *inMemoryReader) ReadAt(p []byte, off int64) (n int, err error) {
 }
 
 func (service *ConverterService) reconfigure(w http.ResponseWriter, r *http.Request) {
-	var options ConverterOptions
+	var options PipelineFile
 
 	if err := json.NewDecoder(r.Body).Decode(&options); err != nil {
 		sendError(w, fmt.Errorf("error decoding options: %v", err))
 	}
 
-	newConverter, err := MakeCodeConverter(&options)
+	pipeline, err := compilePipeline(options)
 	if err != nil {
-		sendError(w, fmt.Errorf("error creating new converter: %v", err))
+		sendError(w, fmt.Errorf("error compiling pipeline: %v", err))
 	}
-	log.Infof("applying new conversion options: %v", options)
-	if len(service.requestQueue) > 0 {
-		log.Warn("applying new conversion options with pending requests")
+	if pipeline == nil {
+		sendError(w, fmt.Errorf("error compiling pipeline: no pipeline"))
 	}
 
 	service.mutex.Lock()
-	service.converter = newConverter
+	service.converter.Reconfigure(pipeline)
 	service.metrics = make(map[uuid.UUID]Metrics)
-	service.results = make(map[uuid.UUID]*ConverterRequest)
+	service.results = make(map[uuid.UUID]*ConversionRequest)
 	service.mutex.Unlock()
 
 	w.WriteHeader(http.StatusCreated)
