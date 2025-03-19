@@ -130,20 +130,28 @@ func (service *ConverterService) pollHandler(w http.ResponseWriter, r *http.Requ
 		}
 	} else if r.Method == http.MethodGet {
 		if ok {
-			if resp.err != nil {
-				sendError(w, resp.err)
-			} else {
-				w.Header().Set("Content-Type", "application/zip")
-				var buf bytes.Buffer
-				err = service.converter.WriteDeploymentPackage(&buf, resp.WorkingPackage)
-				if err != nil {
-					sendError(w, err)
-				} else {
-					_, _ = w.Write(buf.Bytes())
-				}
-
+			defer func() {
+				service.mutex.RLock()
+				delete(service.results, jobUUID)
+				service.mutex.RUnlock()
+			}()
+			if resp == nil || resp.WorkingPackage == nil {
+				sendError(w, fmt.Errorf("no working package for job uuid %s", jobUUID.String()))
+				return
 			}
-
+			w.Header().Set("Content-Type", "application/zip")
+			var buf bytes.Buffer
+			err = service.converter.WriteDeploymentPackage(&buf, resp.WorkingPackage)
+			if err != nil {
+				sendError(w, err)
+			} else {
+				_, _ = w.Write(buf.Bytes())
+				if resp.err != nil {
+					w.WriteHeader(http.StatusNotAcceptable)
+				} else {
+					w.WriteHeader(http.StatusOK)
+				}
+			}
 		} else {
 			http.NotFound(w, r)
 		}

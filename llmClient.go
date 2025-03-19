@@ -8,6 +8,7 @@ import (
 	"github.com/ollama/ollama/api"
 	log "github.com/sirupsen/logrus"
 	"iter"
+	"maps"
 	"os"
 	"strings"
 	"text/template"
@@ -62,6 +63,18 @@ func makeLLMConverter(args map[string]interface{}) Converter {
 	delete(args, "model_name")
 	delete(args, "prompt")
 	delete(args, "reader")
+
+	defaultParams := map[string]interface{}{
+		"max_tokens": 2 << 14,
+		//"temperature": 1.0,
+		//"top_k":       64,
+		//"top_p":       0.95,
+		//"min_p":       0.0,
+		"response_format": map[string]interface{}{
+			"type": "json_object",
+		},
+	}
+	maps.Insert(args, maps.All(defaultParams))
 
 	return &LLMConverter{
 		template:       prompt_tmpl,
@@ -141,21 +154,11 @@ func (cc *LLMConverter) invokeLLM(runner *PipelineRunner, buf bytes.Buffer) (api
 	var metrics = Metrics{}
 	steam := new(bool)
 	req := api.GenerateRequest{
-		Model:  cc.ModelName,
-		Prompt: buf.String(),
-		Stream: steam,
-		//TODO: respect configuration
-		Options: map[string]interface{}{
-			//"max_tokens":  2 << 14,
-			//"temperature": 1.0,
-			//"top_k":       64,
-			//"top_p":       0.95,
-			//"min_p":       0.0,
-			"response_format": map[string]interface{}{
-				"type": "json_object",
-			},
-		},
-		Format: llmOutputSchema,
+		Model:   cc.ModelName,
+		Prompt:  buf.String(),
+		Stream:  steam,
+		Options: cc.RequestOptions,
+		Format:  llmOutputSchema,
 	}
 
 	callback := make(chan api.GenerateResponse)
@@ -194,7 +197,9 @@ func JsonCodeBlockReader(response string) map[string]string {
 
 func codeBlockGenerator(code *DeploymentPackage) strings.Builder {
 	var codeBlock strings.Builder
-
+	if code == nil {
+		return codeBlock
+	}
 	codeBlock.WriteString(fmt.Sprintf("#### main.%s\n```go\n", code.Suffix))
 	codeBlock.WriteString(code.RootFile)
 	codeBlock.WriteString("```\n\n")

@@ -17,6 +17,9 @@ func (gr GoLLMDeploymentReader) makeDeploymentFile(response string, original *De
 	if response == "" {
 		return nil, fmt.Errorf("response is empty")
 	}
+	if original == nil {
+		return nil, fmt.Errorf("original is empty")
+	}
 
 	files := JsonCodeBlockReader(response)
 	log.Debugf("found %d files", len(files))

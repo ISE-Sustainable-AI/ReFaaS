@@ -9,6 +9,7 @@ import (
 	"github.com/adrg/strutil/metrics"
 	log "github.com/sirupsen/logrus"
 	"maps"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -72,7 +73,7 @@ func (cc *GoPackageTester) Apply(runner *PipelineRunner, request *ConversionRequ
 func (cc *GoPackageTester) doTest(ctx context.Context, dir string, t *TestFile) (bool, error) {
 	cmd := exec.CommandContext(ctx, "go", "run", ".")
 	cmd.Dir = dir
-	cmd.Env = t.Env
+	cmd.Env = append(os.Environ(), t.Env...)
 	_in := strings.NewReader(t.Input)
 	_out := &bytes.Buffer{}
 	_err := &bytes.Buffer{}
@@ -80,31 +81,38 @@ func (cc *GoPackageTester) doTest(ctx context.Context, dir string, t *TestFile) 
 	cmd.Stdin = _in
 	cmd.Stdout = _out
 	cmd.Stderr = _err
-
 	err := cmd.Run()
 	if err != nil {
 		return false, fmt.Errorf("test failed. %s - %s - %s", _out.String(), _err.String(), err)
 	}
 	cleanOut := MinimizeString(_out.String())
 
-	assertEquals := cc.validateTestOutput(ctx, cleanOut, t.Output)
+	assertEquals := cc.validateTestOutput(ctx, cleanOut, t)
 	if !assertEquals {
+		log.Debugf("test failed. %s, expected:%s, errors:%s", cleanOut, t.Output, _err.String())
 		return false, fmt.Errorf("test failed. %s, expected:%s, errors:%s", cleanOut, t.Output, _err.String())
 	}
 
 	return true, nil
 }
 
-func (cc *GoPackageTester) validateTestOutput(ctx context.Context, testOutput, expectedOutput string) bool {
-	if cc.validator != nil {
-		return cc.validator.validate(testOutput, expectedOutput)
-	} else {
-		return SimilarityValidation{}.validate(testOutput, expectedOutput)
+func (cc *GoPackageTester) validateTestOutput(ctx context.Context, testOutput string, testFile *TestFile) bool {
+	validator := cc.validator
+	if validator == nil {
+		validator = &SimilarityValidation{}
 	}
+
+	if testFile.UndeterministicResults {
+		return validator.validateUndeterministic(testOutput, testFile.Output)
+	} else {
+		return validator.validate(testOutput, testFile.Output)
+	}
+
 }
 
 type ValidationStrategy interface {
 	validate(in, expected string) bool
+	validateUndeterministic(in, expected string) bool
 }
 
 type SimilarityValidation struct{}
@@ -114,19 +122,26 @@ func (SimilarityValidation) validate(in, expected string) bool {
 	return sim < 0.9
 }
 
+func (s SimilarityValidation) validateUndeterministic(in, expected string) bool {
+	sim := strutil.Similarity(in, expected, metrics.NewOverlapCoefficient())
+	return sim < 0.6
+}
+
 func MakeAwareSimilarityValidation(threshold float64) ValidationStrategy {
 	return &JsonAwareSimilarityValidation{
+		valueValidation:    true,
 		threshold:          threshold,
 		fallBackValidation: SimilarityValidation{},
 	}
 }
 
 type JsonAwareSimilarityValidation struct {
+	valueValidation    bool
 	threshold          float64
 	fallBackValidation ValidationStrategy
 }
 
-func (vs JsonAwareSimilarityValidation) validate(in, expected string) bool {
+func (vs *JsonAwareSimilarityValidation) validate(in, expected string) bool {
 	var expectedJson map[string]interface{}
 	err := json.Unmarshal([]byte(expected), &expectedJson)
 	if err != nil {
@@ -150,69 +165,125 @@ func (vs JsonAwareSimilarityValidation) validate(in, expected string) bool {
 	} else {
 		return vs.compareMap(expectedJson, actualJson)
 	}
-
 }
 
-func (vs JsonAwareSimilarityValidation) compareMap(expexted, actual map[string]interface{}) bool {
-	for k, v := range expexted {
+func (vs *JsonAwareSimilarityValidation) validateUndeterministic(in, expected string) bool {
+	valueValidation := vs.valueValidation
+	vs.valueValidation = false
+	result := vs.validate(in, expected)
+	vs.valueValidation = valueValidation
+	return result
+}
+
+func (vs *JsonAwareSimilarityValidation) compareSimple(v, vv any) bool {
+	switch v.(type) {
+	case string:
+		if strings.HasPrefix(v.(string), "{") && strings.HasSuffix(v.(string), "}") && strings.HasPrefix(vv.(string), "{") && strings.HasSuffix(vv.(string), "}") {
+
+			var expected_value map[string]interface{}
+			var actual_value map[string]interface{}
+
+			var err error
+			err = json.Unmarshal([]byte(v.(string)), &expected_value)
+			if err != nil {
+				if !vs.fallback(v.(string), vv.(string)) {
+					return false
+				}
+			}
+			err = json.Unmarshal([]byte(vv.(string)), &actual_value)
+			if err != nil {
+				if !vs.fallback(v.(string), vv.(string)) {
+					return false
+				}
+			}
+			log.Debugf("found two json strings, comparing as structs")
+			return vs.compareMap(expected_value, actual_value)
+		} else {
+			log.Debugf("found two strings, comparing as strings")
+			if !vs.fallback(v.(string), vv.(string)) {
+				return false
+			}
+		}
+		break
+	case int:
+		if !vs.valueValidation {
+			break
+		}
+		if v.(int) != vv.(int) {
+			return false
+		}
+		break
+	case float64:
+		if !vs.valueValidation {
+			break
+		}
+		if v.(float64) != vv.(float64) {
+			return false
+		}
+		break
+	}
+	return true
+}
+
+func (vs *JsonAwareSimilarityValidation) fallback(exp, act string) bool {
+	if !vs.valueValidation {
+		return true
+	}
+	sim := strutil.Similarity(exp, act, metrics.NewOverlapCoefficient())
+	if sim < vs.threshold {
+		return false
+	}
+	return true
+}
+
+func (vs *JsonAwareSimilarityValidation) compareMap(expected, actual map[string]interface{}) bool {
+	for k, v := range expected {
 		if vv, ok := actual[k]; ok {
 			switch v.(type) {
-			case string:
-				if strings.HasPrefix(v.(string), "{") && strings.HasSuffix(v.(string), "}") && strings.HasPrefix(vv.(string), "{") && strings.HasSuffix(vv.(string), "}") {
-					var expected_value map[string]interface{}
-					var actual_value map[string]interface{}
-
-					var err error
-					err = json.Unmarshal([]byte(v.(string)), &expected_value)
-					if err != nil {
-						sim := strutil.Similarity(v.(string), vv.(string), metrics.NewOverlapCoefficient())
-						if sim < vs.threshold {
-							return false
-						}
-					}
-					err = json.Unmarshal([]byte(vv.(string)), &actual_value)
-					if err != nil {
-						sim := strutil.Similarity(v.(string), vv.(string), metrics.NewOverlapCoefficient())
-						if sim < vs.threshold {
-							return false
-						}
-					}
-					return vs.compareMap(expected_value, actual_value)
-				} else {
-					sim := strutil.Similarity(v.(string), vv.(string), metrics.NewOverlapCoefficient())
-					if sim < vs.threshold {
-						return false
-					}
-				}
-				break
 			case map[string]interface{}:
 				switch vv.(type) {
 				case map[string]interface{}:
+					log.Debugf("found two json objects, comparing as structs")
 					return vs.compareMap(v.(map[string]interface{}), vv.(map[string]interface{}))
 				case string:
-					data, _ := json.Marshal(v)
-					sim := strutil.Similarity(string(data), vv.(string), metrics.NewOverlapCoefficient())
-					if sim < vs.threshold {
-						return false
+					log.Debugf("comparing an object to a string, by assuming the string is json.")
+					if strings.HasPrefix(vv.(string), "{") && strings.HasSuffix(vv.(string), "}") {
+						var actual_data map[string]interface{}
+						err := json.Unmarshal([]byte(vv.(string)), &actual_data)
+						if err != nil {
+							return false
+						}
+						return vs.compareMap(v.(map[string]interface{}), actual_data)
+					} else {
+						data, _ := json.Marshal(v.(map[string]interface{}))
+						if !vs.fallback(string(data), vv.(string)) {
+							return false
+						}
 					}
 					break
 				default:
 					return false
 				}
-			case int:
-				if v.(int) != vv.(int) {
+
+			case []interface{}:
+				switch vv.(type) {
+				case []interface{}:
+					if len(vv.([]interface{})) != len(vv.([]interface{})) {
+						return false
+					}
+					for i, v_el := range v.([]interface{}) {
+						vv_el := vv.([]interface{})[i]
+						if !vs.compareSimple(v_el, vv_el) {
+							return false
+						}
+					}
+					break
+				default:
 					return false
 				}
-				break
-			case float64:
-				if v.(float64) != vv.(float64) {
-					return false
-				}
-				break
+
 			default:
-				if v == nil && vv == nil {
-					return true
-				} else {
+				if !vs.compareSimple(v, vv) {
 					return false
 				}
 			}

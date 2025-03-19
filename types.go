@@ -3,6 +3,7 @@ package main
 import (
 	_ "embed"
 	"encoding/json"
+	"fmt"
 	"github.com/google/uuid"
 	"iter"
 	"maps"
@@ -29,12 +30,15 @@ type ConversionTask struct {
 type ConverterFactory func(map[string]interface{}) Converter
 
 var ConverterFactories map[string]ConverterFactory = map[string]ConverterFactory{
-	"goBuilder": makeGolangBuilder,
-	"goTester":  makeGoPackageTester,
-	"llmTask":   makeLLMConverter,
-	"cleaner":   makeCleanupConverter,
-	"coder":     makeCodeConverter,
-	"fixer":     makeRePromptConverter,
+	"goBuilder":  makeGolangBuilder,
+	"goTester":   makeGoPackageTester,
+	"llmTask":    makeLLMConverter,
+	"cleaner":    makeCleanupConverter,
+	"coder":      makeCodeConverter,
+	"fixer":      makeRePromptConverter,
+	"realign":    makeAlignmentConverter,
+	"noop":       makeNoopConverter,
+	"canCompile": makeCompilePrecheckConverter,
 }
 
 // Pipeline represents the workflow pipeline
@@ -55,6 +59,7 @@ type DeploymentPackage struct {
 	TestFiles  map[string]string
 	BuildFiles map[string]string
 	BuildCmd   []string
+	Env        []string
 	Suffix     string
 }
 
@@ -64,6 +69,7 @@ func (dp *DeploymentPackage) getTestFiles() iter.Seq2[*TestFile, error] {
 			file := &TestFile{}
 			err := json.Unmarshal([]byte(v), file)
 			file.Name = name
+			file.Env = dp.Env
 			if !yield(file, err) {
 				return
 			}
@@ -85,6 +91,7 @@ func (dp *DeploymentPackage) copy() *DeploymentPackage {
 		BuildFiles: buildFilesCopy,
 		BuildCmd:   cmdCopy,
 		Suffix:     dp.Suffix,
+		Env:        dp.Env,
 	}
 }
 
@@ -139,6 +146,9 @@ type TestFile struct {
 	Env []string `json:"env"`
 	//Services to mock/deploy for the test
 	Services map[string]string `json:"services"`
+	//If this test will produce deterministicResults
+	UndeterministicResults bool `json:"deterministic"
+`
 }
 
 //go:embed prompts/stage-zero.md
@@ -165,5 +175,51 @@ func makeRePromptConverter(args map[string]interface{}) Converter {
 	return makeLLMConverter(args)
 }
 
+//go:embed prompts/stage-three.md
+var defaultAlignmentPrompt string
+
+func makeAlignmentConverter(args map[string]interface{}) Converter {
+	args["prompt"] = defaultBuildRePrompt
+	return makeLLMConverter(args)
+}
+
 //go:embed default.yaml
 var defaultPipelineFile string
+
+type NoOpConverter struct{}
+
+func (NoOpConverter) Apply(*PipelineRunner, *ConversionRequest) error { return nil }
+
+func makeNoopConverter(args map[string]interface{}) Converter {
+	return &NoOpConverter{}
+}
+
+type CanCompileConverter struct{}
+
+func (CanCompileConverter) Apply(run *PipelineRunner, req *ConversionRequest) error {
+	if req.SourcePackage == nil {
+		return fmt.Errorf("no Package source defined")
+	}
+
+	if req.WorkingPackage == nil {
+		return fmt.Errorf("no Package working directory defined")
+	}
+
+	if req.SourcePackage.RootFile == "" {
+		return fmt.Errorf("no soruce root file defined")
+	}
+
+	if req.WorkingPackage.RootFile == "" {
+		return fmt.Errorf("no working root file defined")
+	}
+
+	if len(req.SourcePackage.TestFiles) != len(req.WorkingPackage.TestFiles) {
+		return fmt.Errorf("number of test files and test files don't match")
+	}
+
+	return nil
+}
+
+func makeCompilePrecheckConverter(args map[string]interface{}) Converter {
+	return &CanCompileConverter{}
+}

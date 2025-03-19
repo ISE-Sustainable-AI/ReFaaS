@@ -1,7 +1,7 @@
 You're a software engineer with long experience in writing programs.
 
 A junior developer has given you the following source code of an AWS Lambda function he has been working on:
-```
+```py
 {{ .code }}
 ```
 

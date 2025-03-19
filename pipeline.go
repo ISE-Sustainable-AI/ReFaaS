@@ -37,37 +37,52 @@ func (p *Pipeline) executeTask(runner *PipelineRunner, req *ConversionRequest, t
 	}
 
 	var err error
-	for ; task.RetryCount < task.MaxRetryCount; task.RetryCount++ {
-		err = task.Execute.Apply(runner, req)
-		if err == nil {
-			log.Debugf("task %s executed successfully", task.ID)
-			break
-		}
+	var workingPackage *DeploymentPackage = nil
+	if task.Execute != nil {
+		for ; task.RetryCount < task.MaxRetryCount; task.RetryCount++ {
+			if req.WorkingPackage != nil {
+				workingPackage = req.WorkingPackage.copy()
+			}
+			err = task.Execute.Apply(runner, req)
+			if err == nil {
+				log.Debugf("task %s executed successfully", task.ID)
+				break
+			}
 
-		if task.RetryCount+1 < task.MaxRetryCount {
-			log.Debugf("task %s retry failed (%+v), retrying...", task.ID, err)
+			if task.RetryCount+1 < task.MaxRetryCount {
+				log.Debugf("task %s retry failed (%+v), retrying...", task.ID, err)
 
-			if task.OnFailure != nil {
-				req.err = err
-				log.Debugf("atempting to recover task %s before retring", task.ID)
-				err = p.executeTask(runner, req, task.OnFailure)
-				if err == nil {
-					// Continue to next retry attempt of TaskB without exceeding max retries
-					log.Debugf("Retrying failed task %s after recovery", task.ID)
-					continue
-				} else {
-					log.Debugf("Recovery failed.")
-					break
+				if task.OnFailure != nil {
+					req.err = err
+					log.Debugf("atempting to recover task %s before retring", task.ID)
+					err = p.executeTask(runner, req, task.OnFailure)
+					if err == nil {
+						// Continue to next retry attempt of TaskB without exceeding max retries
+						log.Debugf("Retrying failed task %s after recovery", task.ID)
+						continue
+					} else {
+						log.Debugf("Recovery failed.")
+						break
+					}
+				}
+				time.Sleep(task.RetryDelay)
+			}
+			//recover working package
+			if req.WorkingPackage != nil && task.CanApply != nil {
+				err := task.CanApply.Apply(runner, req)
+				if err != nil {
+					if workingPackage != nil {
+						req.WorkingPackage = workingPackage
+					}
 				}
 			}
-			time.Sleep(task.RetryDelay)
 		}
-	}
 
-	if err != nil {
-		log.Debugf("task %s failed.", task.ID)
-		req.err = err
-		return err
+		if err != nil {
+			log.Debugf("task %s failed.", task.ID)
+			req.err = err
+			return err
+		}
 	}
 
 	if task.Validation != nil {

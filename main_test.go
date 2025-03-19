@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -35,7 +36,7 @@ func TestFullConversion(t *testing.T) {
 
 	assert.Nil(t, err)
 
-	req, err := cc.ConvertFromFileBest("test/f3.zip")
+	req, err := cc.ConvertFromFileBest("test/f5.zip")
 	assert.NoError(t, err)
 	assert.NotNil(t, req)
 	if req != nil {
@@ -157,4 +158,97 @@ func TestMakeAwareSimilarityValidation(t *testing.T) {
 		"{\"statusCode\":200,\"headers\":null,\"multiValueHeaders\":null,\"body\":{\"result\":20}}")
 
 	assert.True(t, result)
+}
+
+func TestValidationFromFolder(t *testing.T) {
+	log.SetLevel(log.DebugLevel)
+	dir := "/Users/b/projects/sustian/functionset_aws/manual_set"
+	validateFromFolder(t, dir)
+}
+
+func TestValidationFromFolders(t *testing.T) {
+	dirs := []string{
+		//"/Users/b/projects/sustian/functionset_aws/manual_set",
+		//"/Users/b/projects/sustian/functionset_aws/advanced_deepseek-r1_32b",
+		"/Users/b/projects/sustian/functionset_aws/advanced_gemma3_27b",
+		"/Users/b/projects/sustian/functionset_aws/advanced_qwen2.5-coder_32b",
+		"/Users/b/projects/sustian/functionset_aws/advanced_qwq",
+		"/Users/b/projects/sustian/functionset_aws/simple_deepseek-r1_32b",
+		"/Users/b/projects/sustian/functionset_aws/simple_gemma3_27b",
+		"/Users/b/projects/sustian/functionset_aws/simple_qwen2.5-coder_32b",
+		"/Users/b/projects/sustian/functionset_aws/simple_qwq",
+	}
+	for _, dir := range dirs {
+		validateFromFolder(t, dir)
+	}
+}
+
+func validateFromFolder(t *testing.T, dir string) {
+	files, err := ListZipFiles(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	experiment := filepath.Base(dir)
+	for _, file := range files {
+		t.Run(fmt.Sprintf("%s_%s", experiment, file), func(t *testing.T) {
+			cc, err := MakeCodeConverter(&ConverterOptions{
+				OLLAMA_API_URL,
+			}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			dp, err := cc.ReadDeploymentPackageFromFile(path.Join(dir, file))
+			assert.Nil(t, err)
+
+			dp.BuildCmd = []string{
+				"go mod init example",
+				"go mod tidy",
+				"go build .",
+			}
+			dp.Suffix = "go"
+
+			task := ConversionTask{
+				ID:            "test",
+				Execute:       makeGolangBuilder(nil),
+				CanApply:      nil,
+				RetryCount:    0,
+				MaxRetryCount: 1,
+				RetryDelay:    0,
+				Next:          nil,
+				OnFailure:     nil,
+				Validation: makeGoPackageTester(map[string]interface{}{
+					"strategy": "json",
+				}),
+			}
+			pipeline := NewPipeline(&task)
+
+			req := MakeConversionRequest(dp)
+			req.WorkingPackage = req.SourcePackage
+
+			err = pipeline.Execute(cc, req)
+			t.Logf("%s\n%+v", file, req.Metrics.TestCases)
+			assert.Nil(t, err)
+
+		})
+	}
+}
+
+func ListZipFiles(dir string) ([]string, error) {
+	var zipFiles []string
+
+	// Read directory contents
+	files, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+
+	// Iterate over files and filter ZIP files
+	for _, file := range files {
+		if !file.IsDir() && filepath.Ext(file.Name()) == ".zip" {
+			zipFiles = append(zipFiles, file.Name())
+		}
+	}
+
+	return zipFiles, nil
 }

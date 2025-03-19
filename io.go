@@ -28,8 +28,11 @@ func (cc *PipelineRunner) ReadDeploymentPackageFromFile(sourceFile string) (*Dep
 
 func (cc *PipelineRunner) ReadDeploymentPackageFromReader(reader io.ReaderAt, size int64) (*DeploymentPackage, error) {
 	dp := DeploymentPackage{
-		RootFile:  "",
-		TestFiles: make(map[string]string),
+		RootFile:   "",
+		TestFiles:  make(map[string]string),
+		BuildFiles: make(map[string]string),
+		BuildCmd:   make([]string, 0),
+		Env:        make([]string, 0),
 	}
 	zipfs, err := zip.NewReader(reader, size)
 	if err != nil {
@@ -62,6 +65,17 @@ func (cc *PipelineRunner) ReadDeploymentPackageFromReader(reader io.ReaderAt, si
 				return nil, err
 			}
 			dp.TestFiles[file.Name] = string(testFile)
+		} else if strings.HasSuffix(file.Name, ".env") {
+			fileReader, err := file.Open()
+			if err != nil {
+				return nil, err
+			}
+			defer fileReader.Close()
+			envFile, err := io.ReadAll(fileReader)
+			if err != nil {
+				return nil, err
+			}
+			dp.Env = append(dp.Env, strings.Split(string(envFile), "\n")...)
 		}
 	}
 	return &dp, err
