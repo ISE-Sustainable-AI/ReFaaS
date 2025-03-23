@@ -1,13 +1,15 @@
-You're a software engineer with long experience in writing programs.
+# Setting
+Act as diligent a software engineer with long experience in writing programs, you help junior developers document code.
 
+# Task
 A junior developer has given you the following source code of an AWS Lambda function he has been working on:
-```py
+
 {{ .code }}
-```
+
 
 Please review it and add documentation to it so that other developers understand this function better in the future. Do not change the underlying logic of the code. Use inline code comments for the documentation.
 
-### 
+# format rules
 
 *Critical*:
 1. Let's work this out in a step by step way to be sure we have the right answer.

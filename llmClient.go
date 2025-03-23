@@ -64,6 +64,7 @@ func makeLLMConverter(args map[string]interface{}) Converter {
 	delete(args, "prompt")
 	delete(args, "reader")
 
+	//XXX depends on LLM Client/Model
 	defaultParams := map[string]interface{}{
 		"max_tokens": 2 << 14,
 		//"temperature": 1.0,
@@ -75,7 +76,7 @@ func makeLLMConverter(args map[string]interface{}) Converter {
 		},
 	}
 	maps.Insert(args, maps.All(defaultParams))
-
+	log.Debugf("creating LLM converter with params: %v", args)
 	return &LLMConverter{
 		template:       prompt_tmpl,
 		ModelName:      model,
@@ -88,17 +89,21 @@ func (cc *LLMConverter) Apply(runner *PipelineRunner, code *ConversionRequest) e
 	var buf bytes.Buffer
 
 	codeBlock := codeBlockGenerator(code.WorkingPackage)
+	result := getFirstTestFile(code)
 
-	next, stop := iter.Pull2(code.SourcePackage.getTestFiles())
-	result, err, valid := next()
-	stop()
-	if err != nil || !valid {
-		result = &TestFile{}
+	srcFile := ""
+	if code.SourcePackage != nil {
+		srcFile = code.SourcePackage.RootFile
 	}
-	err = cc.template.Execute(&buf, map[string]interface{}{
+	errStr := ""
+	if code.err != nil {
+		errStr = code.err.Error()
+	}
+
+	err := cc.template.Execute(&buf, map[string]interface{}{
 		"code":     codeBlock.String(),
-		"issue":    fmt.Sprintf("%v", code.err),
-		"original": code.SourcePackage.RootFile,
+		"issue":    errStr,
+		"original": srcFile,
 		"input":    result.Input,
 		"output":   result.Output,
 	})
@@ -107,14 +112,19 @@ func (cc *LLMConverter) Apply(runner *PipelineRunner, code *ConversionRequest) e
 		return err
 	}
 
+	//XXX: interface entry point ...
 	response, metrics, err := cc.invokeLLM(runner, buf)
 	code.Metrics.AddMetric(metrics)
 	if err != nil {
 		return err
 	}
 
-	cc.logLLMResponse(code.SourcePackage.RootFile, response.Response, buf.String())
-	newPackage, err := cc.reader.makeDeploymentFile(response.Response, code.WorkingPackage)
+	cc.logLLMResponse(code.SourcePackage.RootFile, response, buf.String())
+	original := code.WorkingPackage
+	if original == nil {
+		original = code.SourcePackage
+	}
+	newPackage, err := cc.reader.makeDeploymentFile(response, original)
 	code.WorkingPackage = newPackage
 
 	if err != nil {
@@ -123,6 +133,16 @@ func (cc *LLMConverter) Apply(runner *PipelineRunner, code *ConversionRequest) e
 	}
 
 	return nil
+}
+
+func getFirstTestFile(code *ConversionRequest) *TestFile {
+	next, stop := iter.Pull2(code.SourcePackage.getTestFiles())
+	result, err, valid := next()
+	stop()
+	if err != nil || !valid {
+		result = &TestFile{}
+	}
+	return result
 }
 
 func (cc *LLMConverter) logLLMResponse(srcPkgCode, raw_response, query string) {
@@ -150,7 +170,7 @@ var llmOutputSchema = json.RawMessage(`{
   }
 }`)
 
-func (cc *LLMConverter) invokeLLM(runner *PipelineRunner, buf bytes.Buffer) (api.GenerateResponse, Metrics, error) {
+func (cc *LLMConverter) invokeLLM(runner *PipelineRunner, buf bytes.Buffer) (string, Metrics, error) {
 	var metrics = Metrics{}
 	steam := new(bool)
 	req := api.GenerateRequest{
@@ -176,17 +196,17 @@ func (cc *LLMConverter) invokeLLM(runner *PipelineRunner, buf bytes.Buffer) (api
 
 	response := <-callback
 
-	metrics.ConversionTime = response.TotalDuration
-	metrics.ConversionPromptTime = response.PromptEvalDuration
-	metrics.ConversionEvalTime = response.EvalDuration
-	metrics.ConversionPromptTokenCount = response.PromptEvalCount
-	metrics.ConversionEvalTokenCount = response.EvalCount
+	metrics.ConversionTime += response.TotalDuration
+	metrics.ConversionPromptTime += response.PromptEvalDuration
+	metrics.ConversionEvalTime += response.EvalDuration
+	metrics.ConversionPromptTokenCount += response.PromptEvalCount
+	metrics.ConversionEvalTokenCount += response.EvalCount
 
 	if response.Response == "" {
-		return api.GenerateResponse{}, metrics, fmt.Errorf("response is empty - %s", response.DoneReason)
+		return "", metrics, fmt.Errorf("response is empty - %s", response.DoneReason)
 	}
 
-	return response, metrics, nil
+	return response.Response, metrics, nil
 }
 
 func JsonCodeBlockReader(response string) map[string]string {
@@ -202,11 +222,11 @@ func codeBlockGenerator(code *DeploymentPackage) strings.Builder {
 	}
 	codeBlock.WriteString(fmt.Sprintf("#### main.%s\n```go\n", code.Suffix))
 	codeBlock.WriteString(code.RootFile)
-	codeBlock.WriteString("```\n\n")
+	codeBlock.WriteString("\n```\n\n")
 	for _, fname := range code.BuildFiles {
 		codeBlock.WriteString(fmt.Sprintf("\n#### %s\n```go\n", fname))
 		codeBlock.WriteString(code.BuildFiles[fname])
-		codeBlock.WriteString("```\n\n")
+		codeBlock.WriteString("\n```\n\n")
 	}
 	return codeBlock
 }

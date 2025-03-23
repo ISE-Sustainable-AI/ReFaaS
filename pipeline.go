@@ -50,7 +50,7 @@ func (p *Pipeline) executeTask(runner *PipelineRunner, req *ConversionRequest, t
 			}
 
 			if task.RetryCount+1 < task.MaxRetryCount {
-				log.Debugf("task %s retry failed (%+v), retrying...", task.ID, err)
+				log.Errorf("task %s retry failed (%+v), retrying...", task.ID, err)
 
 				if task.OnFailure != nil {
 					req.err = err
@@ -71,6 +71,7 @@ func (p *Pipeline) executeTask(runner *PipelineRunner, req *ConversionRequest, t
 			if req.WorkingPackage != nil && task.CanApply != nil {
 				err := task.CanApply.Apply(runner, req)
 				if err != nil {
+					log.Errorf("the task coruppted the working package, recovering latest version.")
 					if workingPackage != nil {
 						req.WorkingPackage = workingPackage
 					}
@@ -79,7 +80,7 @@ func (p *Pipeline) executeTask(runner *PipelineRunner, req *ConversionRequest, t
 		}
 
 		if err != nil {
-			log.Debugf("task %s failed.", task.ID)
+			log.Debugf("task %s failed. %+v", task.ID, err)
 			req.err = err
 			return err
 		}

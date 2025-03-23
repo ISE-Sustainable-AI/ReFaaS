@@ -34,6 +34,9 @@ func (cc *GolangBuilder) Apply(runner *PipelineRunner, request *ConversionReques
 		defer os.RemoveAll(runner.WorkingDir)
 	}
 	start := time.Now()
+	defer func() {
+		request.Metrics.BuildTime = time.Since(start)
+	}()
 	dir, err := os.MkdirTemp("", "fn_lmm")
 	if err != nil {
 		return err
@@ -43,8 +46,9 @@ func (cc *GolangBuilder) Apply(runner *PipelineRunner, request *ConversionReques
 	code.BuildFiles["handler.go"] = string(cc.TestHandler)
 	//Build testable version
 	err = cc.build(request, dir)
-	request.Metrics.BuildTime = time.Since(start)
+
 	if err != nil {
+		request.Metrics.BuildError += 1
 		log.Debugf("failed to build: %s", err.Error())
 		return CompilationError{err}
 	}

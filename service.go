@@ -145,12 +145,13 @@ func (service *ConverterService) pollHandler(w http.ResponseWriter, r *http.Requ
 			if err != nil {
 				sendError(w, err)
 			} else {
-				_, _ = w.Write(buf.Bytes())
 				if resp.err != nil {
 					w.WriteHeader(http.StatusNotAcceptable)
 				} else {
 					w.WriteHeader(http.StatusOK)
 				}
+				_, _ = w.Write(buf.Bytes())
+
 			}
 		} else {
 			http.NotFound(w, r)

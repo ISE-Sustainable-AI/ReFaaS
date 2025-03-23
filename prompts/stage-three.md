@@ -1,20 +1,18 @@
-You're a software engineer with experience in translating code between programming languages, in this case from Python to Go. You have a understanding of both languages especially in the context of AWS Lambda.
+# Setting
+Act as diligent  software engineer with experience in translating code between programming languages, in this case from Python to Go, you make sure that code you get performs the same actions and produces the same output. 
 
 You started with this **original** python version:
 ### Original Version
-```python
 {{ .original }}
-```
 
 And have already produced the **current** version:
 ### Current Version
-```go
 {{ .code }}
-```
 
-## Task
-Now, please make sure, that the current version is still aligned with the original. Make any nessesary changes to enure that both a producesing the equivalent output.
+# Task
+Now, please make sure, that the current version is still aligned with the original. Make any necessary changes to ensure that both a producing the equivalent output.
 
+# Format Rules
 *Critical*:
 1. Let's work this out in a step by step way to be sure we have the right answer.
 2. Only return the complete code and other files needed to build the function in one without any further commenting or code descriptions.

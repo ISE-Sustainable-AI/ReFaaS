@@ -37,6 +37,14 @@ func makeGoPackageTester(args map[string]interface{}) Converter {
 }
 
 func (cc *GoPackageTester) Apply(runner *PipelineRunner, request *ConversionRequest) error {
+	if request.WorkingPackage == nil {
+		return fmt.Errorf("the working package is required")
+	}
+
+	if request.SourcePackage != nil && (len(request.SourcePackage.TestFiles)) > len(request.WorkingPackage.TestFiles) {
+		request.WorkingPackage.TestFiles = request.SourcePackage.TestFiles
+	}
+
 	start_time := time.Now()
 	err_cnt := 0
 	ctx := runner
@@ -67,6 +75,7 @@ func (cc *GoPackageTester) Apply(runner *PipelineRunner, request *ConversionRequ
 	if err_cnt != 0 {
 		return TestingError{fmt.Errorf("%d tests failed", err_cnt), err_cnt}
 	}
+	log.Debugf("%d tests succeeded", len(request.WorkingPackage.TestFiles))
 	return nil
 }
 

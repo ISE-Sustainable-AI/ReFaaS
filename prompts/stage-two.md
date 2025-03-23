@@ -1,15 +1,17 @@
-You're a software engineer with experience in writing Go programs for AWS Lambda.
+# Setting
+Act as diligent a software engineer with experience in writing Go programs for AWS Lambda, you fix compilation issues.
 
 You have the following existing code:
-
+```
 {{ .code }}
-
+```
 
 When compiling you got the following error:
 ```
 {{ .issue }}
 ```
 
+# Task
 Now your task is to do resolve this issue. Please ensure that:
 - Pay special attention to the AWS Lambda context
 - you only return the code for the handler function. There is absolutely no need to include a main.
@@ -17,12 +19,9 @@ Now your task is to do resolve this issue. Please ensure that:
 
 Remember the original function that we wanted to build came from the following python function. Make sure that we fix the issue in our go function while still keeping the logiic of the original.
 
-```py
 {{ .original }}
-```
 
-### 
-
+# Format Rules
 *Critical*:
 1. Let's work this out in a step by step way to be sure we have the right answer.
 2. Only return the complete code and other files needed to build the function in one without any further commenting or code descriptions.
