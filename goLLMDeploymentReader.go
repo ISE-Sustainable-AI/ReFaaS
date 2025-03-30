@@ -10,10 +10,10 @@ import (
 	"strings"
 )
 
-type GoLLMDeploymentReader struct {
+type GoJsonOllamaReader struct {
 }
 
-func (gr GoLLMDeploymentReader) makeDeploymentFile(response string, original *DeploymentPackage) (*DeploymentPackage, error) {
+func (gr GoJsonOllamaReader) makeDeploymentFile(response string, original *DeploymentPackage) (*DeploymentPackage, error) {
 	if response == "" {
 		return nil, fmt.Errorf("response is empty")
 	}
@@ -45,7 +45,7 @@ func (gr GoLLMDeploymentReader) makeDeploymentFile(response string, original *De
 	return &dp, nil
 }
 
-func (gr GoLLMDeploymentReader) prepareGoRootFile(file string) (string, error) {
+func (gr GoJsonOllamaReader) prepareGoRootFile(file string) (string, error) {
 	if file == "" {
 		return "", fmt.Errorf("file is empty")
 	}
@@ -69,7 +69,7 @@ func getContentByNode(content string, decl ast.Decl) string {
 
 }
 
-func (gr GoLLMDeploymentReader) removeGoMainMethod(content string) string {
+func (gr GoJsonOllamaReader) removeGoMainMethod(content string) string {
 	fset := token.NewFileSet()
 	node, err := parser.ParseFile(fset, "main.go", content, parser.AllErrors)
 	if err != nil {
@@ -101,7 +101,7 @@ func (gr GoLLMDeploymentReader) removeGoMainMethod(content string) string {
 	return output.String()
 }
 
-func (gr GoLLMDeploymentReader) containsGoMainMethod(content string) bool {
+func (gr GoJsonOllamaReader) containsGoMainMethod(content string) bool {
 	mainMethodRegex := regexp.MustCompile(`func main\(\)`) // Regex to check for main function
 	return mainMethodRegex.MatchString(content)
 }

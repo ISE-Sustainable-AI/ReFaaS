@@ -2,50 +2,69 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"github.com/google/uuid"
-	"github.com/ollama/ollama/api"
 	log "github.com/sirupsen/logrus"
-	"net/http"
-	"net/url"
 	"os"
 )
-
-//TODO: implement a compile REL loop with the LLM to improve the code...
-//TODO: turn metrics to pointer and remove from dps.
 
 type PipelineRunner struct {
 	context.Context
 	//internals
-	client *api.Client
+	client LLMInvocationClient
 
 	pipeline   *Pipeline
 	WorkingDir string
 }
 
 type ConverterOptions struct {
-	OLLAMA_API_URL string `json:"ollama_url"`
+	Pipeline *PipelineFile `json:"pipeline",omitempty`
+
+	LLMClient string         `json:"LLMClient"`
+	Args      map[string]any `json:"args"`
 }
 
 func (co *ConverterOptions) setDefaults() {
-	if co.OLLAMA_API_URL == "" {
-		co.OLLAMA_API_URL = DefaultOptions.OLLAMA_API_URL
+	if co.LLMClient == "" {
+		co.LLMClient = DefaultOptions.LLMClient
+	}
+	if co.Args == nil {
+		co.Args = DefaultOptions.Args
+	} else {
+		for k, v := range DefaultOptions.Args {
+			if _, ok := co.Args[k]; !ok {
+				co.Args[k] = v
+			}
+		}
 	}
 }
 
 var DefaultOptions = ConverterOptions{
-	OLLAMA_API_URL: OLLAMA_API_URL,
+	LLMClient: "ollama",
+	Args: map[string]any{
+		"OLLAMA_API_URL": OLLAMA_API_URL,
+	},
 }
 
-func MakeCodeConverter(ops *ConverterOptions, pipeline *Pipeline) (*PipelineRunner, error) {
+func MakeCodeConverter(ops *ConverterOptions) (*PipelineRunner, error) {
 	if ops == nil {
 		ops = &DefaultOptions
 	} else {
 		ops.setDefaults()
 	}
 
-	client := http.Client{}
-	url, _ := url.Parse(ops.OLLAMA_API_URL)
-	api_client := api.NewClient(url, &client)
+	//XXX placeholder
+	api_client, err := LLMClientFactories[ops.LLMClient](ops.Args)
+	if err != nil {
+		return nil, err
+	}
+	var pipeline *Pipeline
+	if ops.Pipeline != nil {
+		pipeline, err = compilePipeline(*ops.Pipeline)
+		if err != nil {
+			return nil, err
+		}
+	}
 
 	return &PipelineRunner{
 		Context:  context.Background(),
@@ -61,6 +80,7 @@ func MakeConversionRequest(srcPkg *DeploymentPackage) *ConversionRequest {
 		Metrics: &Metrics{
 			TestCases: make(map[string]bool),
 		},
+		err: make([]error, 0),
 	}
 }
 
@@ -70,12 +90,31 @@ func (cc *PipelineRunner) Convert(req *ConversionRequest) error {
 	return cc.pipeline.Execute(cc, req)
 }
 
-func (cc *PipelineRunner) Reconfigure(pipeline *Pipeline) {
+func (cc *PipelineRunner) Reconfigure(ops *ConverterOptions) error {
+	ops.setDefaults()
+	api_client, err := LLMClientFactories[ops.LLMClient](ops.Args)
+	if err != nil {
+		return err
+	}
+
+	if ops.Pipeline == nil {
+		return fmt.Errorf("no pipeline specified")
+	}
+
+	pipeline, err := compilePipeline(*ops.Pipeline)
+	if err != nil {
+		return err
+	}
+
 	if cc.WorkingDir != "" {
 		defer os.RemoveAll(cc.WorkingDir)
 	}
+
 	cc.WorkingDir = ""
 	cc.pipeline = pipeline
+	cc.client = api_client
+
+	return nil
 }
 
 func (cc *PipelineRunner) ConvertFromFileBest(sourceFile string) (*ConversionRequest, error) {

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	log "github.com/sirupsen/logrus"
 	"maps"
@@ -37,4 +38,13 @@ func (gr BasicLLMDeploymentReader) makeDeploymentFile(response string, original 
 	dp.TestFiles = original.TestFiles
 	dp.Suffix = original.Suffix
 	return &dp, nil
+}
+
+func JsonCodeBlockReader(response string) map[string]string {
+	var content map[string]string
+	err := json.Unmarshal([]byte(response), &content)
+	if err != nil {
+		log.Fatal(err)
+	}
+	return content
 }

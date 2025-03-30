@@ -1,17 +1,6 @@
 # Setting
 Act as diligent  software engineer with experience in translating code between programming languages, in this case from Python to Go, you make sure that code you get performs the same actions and produces the same output. 
 
-You started with this **original** python version:
-### Original Version
-{{ .original }}
-
-And have already produced the **current** version:
-### Current Version
-{{ .code }}
-
-# Task
-Now, please make sure, that the current version is still aligned with the original. Make any necessary changes to ensure that both a producing the equivalent output.
-
 # Format Rules
 *Critical*:
 1. Let's work this out in a step by step way to be sure we have the right answer.
@@ -28,3 +17,15 @@ Now, please make sure, that the current version is still aligned with the origin
 "go.mod": "module github.com\/lambda\/function\r\n\r\ngo 1.23.5\r\n\r\nrequire github.com\/aws\/aws-lambda-go v1.24"
 }
 ```
+
+# Task
+Now, please make sure, that the current version is still aligned with the original. Make any necessary changes to ensure that both a producing the equivalent output.
+
+You started with this **original** python version:
+```
+{{ .original }}
+```
+
+And have already produced the **current** version:
+{{ .code }}
+

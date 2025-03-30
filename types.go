@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	_ "embed"
 	"encoding/json"
 	"fmt"
@@ -46,12 +48,53 @@ type Pipeline struct {
 	FirstTask *ConversionTask
 }
 
+type LLMInvocationClient interface {
+	//Configures the client to serve multiple invocations, e.g., setting up a conncetion pool
+	Configure(args map[string]interface{}) error
+	//Prepares a request to the client, e.g., changing invocation parameters. WARNNING, could create raise conditions.
+	Prepare(map[string]interface{}) error
+	//InvokeLLM takes the given prompt and invokes the llm
+	InvokeLLM(ctx context.Context, buf bytes.Buffer) (string, Metrics, error)
+	//logs details about a llm invocation to a file and console
+	logLLMResponse(...string)
+}
+
+type LLMFactory func(map[string]interface{}) (LLMInvocationClient, error)
+
+var LLMClientFactories map[string]LLMFactory = map[string]LLMFactory{
+	"ollama": func(args map[string]interface{}) (LLMInvocationClient, error) {
+		oc := &OllamaInvocationClient{}
+		err := oc.Configure(args)
+		if err != nil {
+			return nil, err
+		}
+		return oc, nil
+	},
+	"deepseek": func(args map[string]interface{}) (LLMInvocationClient, error) {
+		dc := &DeepSeekInvocationClient{}
+		err := dc.Configure(args)
+		if err != nil {
+			return nil, err
+		}
+		return dc, nil
+	},
+	"gemini": func(args map[string]interface{}) (LLMInvocationClient, error) {
+		gc := &GeminiInvocationClient{}
+		err := gc.Configure(args)
+		if err != nil {
+			return nil, err
+		}
+		return gc, nil
+	},
+}
+
 type ConversionRequest struct {
-	Id             uuid.UUID `json:"id"`
-	SourcePackage  *DeploymentPackage
-	WorkingPackage *DeploymentPackage
-	Metrics        *Metrics
-	err            error
+	Id             uuid.UUID          `json:"id,omitempty"`
+	SourcePackage  *DeploymentPackage `json:"sourcePackage,omitempty"`
+	WorkingPackage *DeploymentPackage `json:"workingPackage,omitempty"`
+	Metrics        *Metrics           `json:"metrics,omitempty"`
+	err            []error
+	Completed      bool `json:"completed,omitempty"`
 }
 
 type DeploymentPackage struct {
@@ -116,6 +159,7 @@ type Metrics struct {
 	Tasks      int `json:"tasks"`
 
 	TestCases map[string]bool `json:"test_cases"`
+	Issues    []string        `json:"issues"`
 }
 
 func (m *Metrics) AddMetric(mm Metrics) {
@@ -179,7 +223,7 @@ func makeRePromptConverter(args map[string]interface{}) Converter {
 var defaultAlignmentPrompt string
 
 func makeAlignmentConverter(args map[string]interface{}) Converter {
-	args["prompt"] = defaultBuildRePrompt
+	args["prompt"] = defaultAlignmentPrompt
 	return makeLLMConverter(args)
 }
 

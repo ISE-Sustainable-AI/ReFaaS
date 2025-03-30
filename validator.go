@@ -38,17 +38,20 @@ func makeGoPackageTester(args map[string]interface{}) Converter {
 
 func (cc *GoPackageTester) Apply(runner *PipelineRunner, request *ConversionRequest) error {
 	if request.WorkingPackage == nil {
+		log.Errorf("missing working package for %s", request.Id)
 		return fmt.Errorf("the working package is required")
 	}
 
 	if request.SourcePackage != nil && (len(request.SourcePackage.TestFiles)) > len(request.WorkingPackage.TestFiles) {
-		request.WorkingPackage.TestFiles = request.SourcePackage.TestFiles
+		request.WorkingPackage.TestFiles = make(map[string]string)
+		maps.Copy(request.WorkingPackage.TestFiles, request.SourcePackage.TestFiles)
+		log.Debugf("Recoverting WP Tests")
 	}
 
 	start_time := time.Now()
 	err_cnt := 0
 	ctx := runner
-
+	log.Debugf("Running GoPackageTester with %d tests", len(request.WorkingPackage.TestFiles))
 	for testfile, err := range maps.Collect(request.WorkingPackage.getTestFiles()) {
 
 		request.Metrics.TestCases[testfile.Name] = false
@@ -67,12 +70,15 @@ func (cc *GoPackageTester) Apply(runner *PipelineRunner, request *ConversionRequ
 		if !success {
 			err_cnt++
 			log.Debugf("test %s failed: %v", testfile.Name, err)
+			continue
 		}
 		request.Metrics.TestCases[testfile.Name] = true
+		log.Debugf("test %s succeeded ", testfile.Name)
 	}
 	request.Metrics.TestTime = time.Since(start_time)
 	request.Metrics.TestError = err_cnt
 	if err_cnt != 0 {
+		log.Debugf("tests failed: %d/%d", err_cnt, len(request.WorkingPackage.TestFiles))
 		return TestingError{fmt.Errorf("%d tests failed", err_cnt), err_cnt}
 	}
 	log.Debugf("%d tests succeeded", len(request.WorkingPackage.TestFiles))
@@ -277,7 +283,7 @@ func (vs *JsonAwareSimilarityValidation) compareMap(expected, actual map[string]
 			case []interface{}:
 				switch vv.(type) {
 				case []interface{}:
-					if len(vv.([]interface{})) != len(vv.([]interface{})) {
+					if len(v.([]interface{})) != len(vv.([]interface{})) {
 						return false
 					}
 					for i, v_el := range v.([]interface{}) {

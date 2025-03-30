@@ -13,6 +13,10 @@ func NewPipeline(firstTask *ConversionTask) *Pipeline {
 
 // Execute runs the pipeline
 func (p *Pipeline) Execute(runner *PipelineRunner, req *ConversionRequest) error {
+	err := p.reset()
+	if err != nil {
+		return err
+	}
 	req.Metrics.StartTime = time.Now()
 	defer func() {
 		req.Metrics.EndTime = time.Now()
@@ -22,16 +26,47 @@ func (p *Pipeline) Execute(runner *PipelineRunner, req *ConversionRequest) error
 	return p.executeTask(runner, req, p.FirstTask)
 }
 
-// executeTask runs an individual task with retry logic and failure handling
-func (p *Pipeline) executeTask(runner *PipelineRunner, req *ConversionRequest, task *ConversionTask) error {
+func (p *Pipeline) reset() error {
+	return p.resetTask(p.FirstTask)
+}
+
+func (p *Pipeline) resetTask(task *ConversionTask) error {
 	if task == nil {
 		return nil
 	}
 
+	task.RetryCount = 0
+
+	if task.OnFailure != nil {
+		err := p.resetTask(task.OnFailure)
+		if err != nil {
+			return err
+		}
+	}
+
+	for _, next := range task.Next {
+		err := p.resetTask(next)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+
+}
+
+// executeTask runs an individual task with retry logic and failure handling
+func (p *Pipeline) executeTask(runner *PipelineRunner, req *ConversionRequest, task *ConversionTask) error {
+	if task == nil {
+		log.Debugf("Task is nil. Skipping")
+		return nil
+	}
+	log.Debugf("starting %s", task.ID)
 	req.Metrics.Tasks += 1
 
 	if task.CanApply != nil {
 		if applyErr := task.CanApply.Apply(runner, req); applyErr != nil {
+			log.Errorf("failed to apply task %s: %s", task.ID, applyErr)
 			return fmt.Errorf("task %s precondition failed - %v", task.ID, applyErr)
 		}
 	}
@@ -39,6 +74,7 @@ func (p *Pipeline) executeTask(runner *PipelineRunner, req *ConversionRequest, t
 	var err error
 	var workingPackage *DeploymentPackage = nil
 	if task.Execute != nil {
+		log.Debugf("Running task %s with (%d - %d) executions", task.ID, task.RetryCount, task.MaxRetryCount)
 		for ; task.RetryCount < task.MaxRetryCount; task.RetryCount++ {
 			if req.WorkingPackage != nil {
 				workingPackage = req.WorkingPackage.copy()
@@ -48,12 +84,12 @@ func (p *Pipeline) executeTask(runner *PipelineRunner, req *ConversionRequest, t
 				log.Debugf("task %s executed successfully", task.ID)
 				break
 			}
-
+			log.Debugf("task %s retry (%d) failed - %s", task.ID, task.RetryCount, err)
 			if task.RetryCount+1 < task.MaxRetryCount {
-				log.Errorf("task %s retry failed (%+v), retrying...", task.ID, err)
+				log.Errorf("task %s retrying...", task.ID)
 
 				if task.OnFailure != nil {
-					req.err = err
+					req.err = append(req.err, err)
 					log.Debugf("atempting to recover task %s before retring", task.ID)
 					err = p.executeTask(runner, req, task.OnFailure)
 					if err == nil {
@@ -76,14 +112,19 @@ func (p *Pipeline) executeTask(runner *PipelineRunner, req *ConversionRequest, t
 						req.WorkingPackage = workingPackage
 					}
 				}
+			} else if req.WorkingPackage == nil && workingPackage != nil {
+				log.Debugf("the task coruppted the working package, recovering latest version.")
+				req.WorkingPackage = workingPackage
 			}
 		}
 
 		if err != nil {
 			log.Debugf("task %s failed. %+v", task.ID, err)
-			req.err = err
+			req.err = append(req.err, err)
 			return err
 		}
+	} else {
+		log.Debugf("task is not an executable task. Skipping")
 	}
 
 	if task.Validation != nil {
@@ -91,15 +132,20 @@ func (p *Pipeline) executeTask(runner *PipelineRunner, req *ConversionRequest, t
 		err = task.Validation.Apply(runner, req)
 		if err != nil {
 			log.Debugf("task validation for %s failed.", task.ID)
-			req.err = err
-			return err
+			req.err = append(req.err, err)
+			if task.RetryCount < task.MaxRetryCount {
+				task.RetryCount++
+				return p.executeTask(runner, req, task)
+			} else {
+				return err
+			}
 		}
 	}
-
+	log.Debugf("task %s executed successfully", task.ID)
 	// Execute next tasks
 	for _, next := range task.Next {
 		if err := p.executeTask(runner, req, next); err != nil {
-			req.err = err
+			req.err = append(req.err, err)
 			return err
 		}
 	}

@@ -39,6 +39,8 @@ func (cc *GolangBuilder) Apply(runner *PipelineRunner, request *ConversionReques
 	}()
 	dir, err := os.MkdirTemp("", "fn_lmm")
 	if err != nil {
+		log.Errorf("Error creating temporary directory: %s", err)
+		request.err = append(request.err, err)
 		return err
 	}
 	runner.WorkingDir = dir
@@ -50,8 +52,10 @@ func (cc *GolangBuilder) Apply(runner *PipelineRunner, request *ConversionReques
 	if err != nil {
 		request.Metrics.BuildError += 1
 		log.Debugf("failed to build: %s", err.Error())
+		request.err = append(request.err, err)
 		return CompilationError{err}
 	}
+	log.Debugf("compiled code in %s", time.Since(start))
 
 	return nil
 }

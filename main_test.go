@@ -6,10 +6,12 @@ import (
 	"fmt"
 	log "github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
+	"golang.org/x/exp/maps"
 	"io"
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 )
@@ -23,6 +25,47 @@ func TestPipelineReader(t *testing.T) {
 	assert.IsTypef(t, pipeline.FirstTask.Execute, &LLMConverter{}, "FirstTask should be a valid type")
 }
 
+func TestJsonPipelineReader(t *testing.T) {
+	fs, err := os.OpenFile("test/pipeline_config.json", os.O_RDONLY, 0666)
+	assert.NoError(t, err)
+	defer fs.Close()
+
+	pipeline, err := PipelineReader(fs)
+	assert.NoError(t, err)
+	assert.NotNil(t, pipeline)
+
+	assert.IsTypef(t, pipeline.FirstTask.Execute, &LLMConverter{}, "FirstTask should be a valid type")
+
+	//Unwrap graph, we assume Acyclic
+	tasks := make([]ConversionTask, 0)
+	next := []*ConversionTask{pipeline.FirstTask}
+	for len(next) > 0 {
+		process := slices.Clone(next)
+		next = []*ConversionTask{}
+		for _, task := range process {
+			tasks = append(tasks, *task)
+			if task.Next != nil {
+				next = append(next, task.Next...)
+			}
+			if task.OnFailure != nil {
+				next = append(next, task.OnFailure)
+			}
+		}
+	}
+
+	for _, task := range tasks {
+		c, ok := task.Execute.(*LLMConverter)
+		if ok {
+			keys := maps.Keys(c.args)
+			assert.True(t, slices.Contains(keys, "model_name"))
+			t.Logf("%v", keys)
+		}
+		t.Logf("%v/%v", task.RetryCount, task.MaxRetryCount)
+		assert.GreaterOrEqual(t, task.MaxRetryCount, 1)
+	}
+
+}
+
 func TestFullConversion(t *testing.T) {
 	reader := bytes.NewReader([]byte(defaultPipelineFile))
 	pipeline, err := PipelineReader(reader)
@@ -31,7 +74,7 @@ func TestFullConversion(t *testing.T) {
 
 	log.SetLevel(log.DebugLevel)
 	cc, err := MakeCodeConverter(&ConverterOptions{
-		OLLAMA_API_URL,
+		"http://swkgpu1.informatik.uni-hamburg.de:11434",
 	}, pipeline)
 
 	assert.Nil(t, err)
@@ -98,7 +141,7 @@ func testCompileByResponseLog(t *testing.T, test_case string) {
 		BuildCmd:   make([]string, 0),
 	}
 
-	reader := GoLLMDeploymentReader{}
+	reader := GoJsonOllamaReader{}
 
 	dp, err := reader.makeDeploymentFile(string(test_bytes), &original)
 	if err != nil {
@@ -251,4 +294,25 @@ func ListZipFiles(dir string) ([]string, error) {
 	}
 
 	return zipFiles, nil
+}
+
+func TestDeepSeekReader(t *testing.T) {
+	dsor := GoDeepSeekOllamaReader{}
+	tf, err := os.OpenFile("test/deepseek.txt", os.O_RDONLY, 0644)
+	defer tf.Close()
+	assert.Nil(t, err)
+
+	deepseek_response, err := io.ReadAll(tf)
+	assert.Nil(t, err)
+
+	src := &DeploymentPackage{
+		TestFiles:  make(map[string]string),
+		BuildCmd:   []string{"go", "build"},
+		BuildFiles: make(map[string]string),
+	}
+	result, err := dsor.makeDeploymentFile(string(deepseek_response), src)
+	assert.Nil(t, err)
+	assert.NotNil(t, result)
+
+	assert.Contains(t, result.RootFile, "handle")
 }

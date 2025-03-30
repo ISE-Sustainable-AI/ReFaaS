@@ -51,10 +51,9 @@ func setFileFromEnv(key, defaultvalue string) string {
 
 func MakeConverterService() error {
 	options := DefaultOptions
+	options.Args[OLLAMA_API_URL] = setOrDefault("OLLAMA_API_URL", OLLAMA_API_URL)
 
-	options.OLLAMA_API_URL = setOrDefault("OLLAMA_API_URL", options.OLLAMA_API_URL)
-
-	converter, err := MakeCodeConverter(&options, nil)
+	converter, err := MakeCodeConverter(&options)
 	if err != nil {
 		return err
 	}
@@ -87,15 +86,21 @@ func (service *ConverterService) Start(ctx context.Context) {
 		err := service.converter.Convert(request)
 		endTime := time.Now()
 		if err != nil {
+			request.Completed = false
 			log.Debugf("error converting best n for %s: %v", request.Id, err)
 		} else {
+			request.Completed = true
 			log.Debugf("converting best n for %s took %v", request.Id, endTime.Sub(startTime))
 		}
 
 		request.Metrics.StartTime = startTime
 		request.Metrics.EndTime = endTime
 		request.Metrics.TotalTime = endTime.Sub(startTime)
-
+		issues := make([]string, 0)
+		for _, err := range request.err {
+			issues = append(issues, fmt.Sprintf("%v", err))
+		}
+		request.Metrics.Issues = issues
 		service.mutex.Lock()
 		service.metrics[request.Id] = *request.Metrics
 		service.results[request.Id] = request
@@ -145,7 +150,7 @@ func (service *ConverterService) pollHandler(w http.ResponseWriter, r *http.Requ
 			if err != nil {
 				sendError(w, err)
 			} else {
-				if resp.err != nil {
+				if !resp.Completed {
 					w.WriteHeader(http.StatusNotAcceptable)
 				} else {
 					w.WriteHeader(http.StatusOK)
@@ -237,25 +242,21 @@ func (r *inMemoryReader) ReadAt(p []byte, off int64) (n int, err error) {
 }
 
 func (service *ConverterService) reconfigure(w http.ResponseWriter, r *http.Request) {
-	var options PipelineFile
+	var options ConverterOptions
 
 	if err := json.NewDecoder(r.Body).Decode(&options); err != nil {
 		sendError(w, fmt.Errorf("error decoding options: %v", err))
 	}
 
-	pipeline, err := compilePipeline(options)
-	if err != nil {
-		sendError(w, fmt.Errorf("error compiling pipeline: %v", err))
-	}
-	if pipeline == nil {
-		sendError(w, fmt.Errorf("error compiling pipeline: no pipeline"))
-	}
-
 	service.mutex.Lock()
-	service.converter.Reconfigure(pipeline)
+	err := service.converter.Reconfigure(&options)
 	service.metrics = make(map[uuid.UUID]Metrics)
 	service.results = make(map[uuid.UUID]*ConversionRequest)
 	service.mutex.Unlock()
 
-	w.WriteHeader(http.StatusCreated)
+	if err != nil {
+		sendError(w, err)
+	} else {
+		w.WriteHeader(http.StatusCreated)
+	}
 }
