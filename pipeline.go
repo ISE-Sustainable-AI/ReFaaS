@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	log "github.com/sirupsen/logrus"
+	"runtime/debug"
 	"time"
 )
 
@@ -12,7 +13,7 @@ func NewPipeline(firstTask *ConversionTask) *Pipeline {
 }
 
 // Execute runs the pipeline
-func (p *Pipeline) Execute(runner *PipelineRunner, req *ConversionRequest) error {
+func (p *Pipeline) Execute(runner *PipelineRunner, req *ConversionRequest) (out error) {
 	err := p.reset()
 	if err != nil {
 		return err
@@ -22,8 +23,14 @@ func (p *Pipeline) Execute(runner *PipelineRunner, req *ConversionRequest) error
 		req.Metrics.EndTime = time.Now()
 		req.Metrics.TotalTime = req.Metrics.EndTime.Sub(req.Metrics.StartTime)
 	}()
-
-	return p.executeTask(runner, req, p.FirstTask)
+	defer func() {
+		if err := recover(); err != nil {
+			log.Errorf("pipline execution panic: %v", err)
+			out = fmt.Errorf("%v\n%s", err, string(debug.Stack()))
+		}
+	}()
+	out = p.executeTask(runner, req, p.FirstTask)
+	return out
 }
 
 func (p *Pipeline) reset() error {

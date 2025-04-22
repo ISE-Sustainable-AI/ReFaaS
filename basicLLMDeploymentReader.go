@@ -44,7 +44,7 @@ func JsonCodeBlockReader(response string) map[string]string {
 	var content map[string]string
 	err := json.Unmarshal([]byte(response), &content)
 	if err != nil {
-		log.Fatal(err)
+		log.Error(err)
 	}
 	return content
 }

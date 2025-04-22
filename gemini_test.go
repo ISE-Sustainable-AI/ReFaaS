@@ -8,9 +8,7 @@ import (
 )
 
 func TestGemini(t *testing.T) {
-	cc, err := MakeCodeConverter(&ConverterOptions{
-		OLLAMA_API_URL,
-	}, nil)
+	cc, err := MakeCodeConverter(&ConverterOptions{})
 
 	srcDep, err := cc.ReadDeploymentPackageFromFile("test/f5.zip")
 	assert.NoError(t, err)

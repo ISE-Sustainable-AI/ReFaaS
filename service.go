@@ -51,7 +51,8 @@ func setFileFromEnv(key, defaultvalue string) string {
 
 func MakeConverterService() error {
 	options := DefaultOptions
-	options.Args[OLLAMA_API_URL] = setOrDefault("OLLAMA_API_URL", OLLAMA_API_URL)
+	options.Args["OLLAMA_API_URL"] = setOrDefault("OLLAMA_API_URL", OLLAMA_API_URL)
+	options.Args["GEMINI_API_KEY"] = setOrDefault("GEMINI_API_KEY", "NOT+SET")
 
 	converter, err := MakeCodeConverter(&options)
 	if err != nil {
